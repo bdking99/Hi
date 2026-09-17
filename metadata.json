@@ -1,0 +1,6 @@
+{
+  "name": "Great Voice Room",
+  "description": "A modern social voice-room and entertainment platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
