@@ -1,130 +1,82 @@
-package com.example.data.repository
+package com.example.data.local.dao
 
-import com.example.data.local.dao.UserDao
-import com.example.data.local.entity.ProfileEntity
-import com.example.data.local.entity.UserEntity
-import com.example.data.model.FirebaseUserProfile
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.SetOptions
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.tasks.await
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.data.model.GiftItem
 
-class UserRepository(private val userDao: UserDao) {
-    private val usersCollection = "users"
+@Composable
+fun GiftPanelScreen(
+    roomId: String,
+    receiverId: String,
+    selectedGift: GiftItem,
+    viewModel: RoomViewModel = hiltViewModel()
+) {
+    val isGifting by viewModel.isGifting.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    private fun getFirestore(): FirebaseFirestore? {
-        return try {
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
-
-    // Room local persistence flows
-    fun getUserFlow(userId: String): Flow<UserEntity?> = userDao.getUserFlow(userId)
-    fun getProfileFlow(userId: String): Flow<ProfileEntity?> = userDao.getProfileFlow(userId)
-    
-    suspend fun getUser(userId: String): UserEntity? = userDao.getUser(userId)
-
-    suspend fun addCoins(userId: String, deltaCoins: Long) {
-        userDao.addCoins(userId, deltaCoins)
-    }
-
-    suspend fun updateBalances(userId: String, coins: Long, earnings: Long) {
-        userDao.updateBalances(userId, coins, earnings)
-    }
-
-    suspend fun updateProfile(userId: String, displayName: String, bio: String, avatar: String?, coverImage: String?) {
-        userDao.updateUserInfo(userId, displayName, avatar, coverImage)
-        userDao.updateBio(userId, bio)
-
-        // Also sync profile changes to Firestore if connected
-        try {
-            val firestore = getFirestore() ?: return
-            val updates = mutableMapOf<String, Any>(
-                "displayName" to displayName,
-                "bio" to bio
-            )
-            if (avatar != null) updates["avatar"] = avatar
-            if (coverImage != null) updates["coverImage"] = coverImage
-            firestore.collection(usersCollection).document(userId).set(updates, SetOptions.merge())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    /**
-     * Firestore query: Real-time stream to fetch public profile data for any user.
-     */
-    fun getPublicProfileStream(userId: String): Flow<FirebaseUserProfile?> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(getFallbackProfile(userId))
-            close()
-            return@callbackFlow
-        }
-
-        try {
-            val docRef = firestore.collection(usersCollection).document(userId)
-            val listener = docRef.addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    trySend(getFallbackProfile(userId))
-                    return@addSnapshotListener
+    // Listen for one-time events from the ViewModel
+    LaunchedEffect(Unit) {
+        viewModel.giftEvent.collect { event ->
+            when (event) {
+                is GiftEvent.Success -> {
+                    if (event.transaction.isBroadcastEvent) {
+                        // TODO: Trigger Full-Screen Lottie/SVGA Animation
+                        println("Triggering massive ${event.transaction.giftName} animation!")
+                    } else {
+                        // TODO: Show small combo animation above the chat
+                        println("Sent ${event.transaction.comboCount}x ${event.transaction.giftName}")
+                    }
                 }
+                is GiftEvent.Error -> {
+                    snackbarHostState.showSnackbar(
+                        message = event.message,
+                        duration = SnackbarDuration.Short
+                    )
+                }
+            }
+        }
+    }
 
-                if (snapshot != null && snapshot.exists()) {
-                    val profile = snapshot.toObject(FirebaseUserProfile::class.java)
-                    trySend(profile)
+    Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Button(
+                onClick = {
+                    viewModel.sendGift(
+                        roomId = roomId,
+                        receiverId = receiverId,
+                        gift = selectedGift,
+                        comboCount = 1
+                    )
+                },
+                enabled = !isGifting, // Disable button during network call
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                if (isGifting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sending...")
                 } else {
-                    val fallback = getFallbackProfile(userId)
-                    trySend(fallback)
+                    Text("Send ${selectedGift.name} (${selectedGift.costCoins} Coins)")
                 }
             }
-
-            awaitClose { listener.remove() }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(getFallbackProfile(userId))
-            close()
         }
-    }
-
-    /**
-     * Firestore query: One-shot fetch of public profile data by user ID.
-     */
-    suspend fun getPublicProfile(userId: String): FirebaseUserProfile? {
-        val firestore = getFirestore() ?: return getFallbackProfile(userId)
-        return try {
-            val snapshot = firestore.collection(usersCollection).document(userId).get().await()
-            if (snapshot.exists()) {
-                snapshot.toObject(FirebaseUserProfile::class.java)
-            } else {
-                getFallbackProfile(userId)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            getFallbackProfile(userId)
-        }
-    }
-
-    private fun getFallbackProfile(userId: String): FirebaseUserProfile {
-        return FirebaseUserProfile(
-            userId = userId,
-            publicUserId = if (userId.length > 6) userId.takeLast(6) else "102839",
-            displayName = "Voice Enthusiast",
-            username = "user_$userId",
-            avatar = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
-            coverImage = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800",
-            bio = "Great Voice Room community member 🎙️✨",
-            level = 12,
-            vipLevel = 2,
-            coinBalance = 2500L,
-            receivedDiamonds = 840L,
-            followersCount = 230,
-            followingCount = 145
-        )
     }
 }
