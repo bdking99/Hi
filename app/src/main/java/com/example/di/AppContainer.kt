@@ -8,6 +8,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.local.AppDatabase
 import com.example.data.repository.AuthRepository
 import com.example.data.repository.UserRepository
+import com.example.data.repository.RoomRepository
 import com.example.domain.usecase.SeedDatabaseUseCase
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -30,6 +31,10 @@ class AppContainer(private val context: Context) {
     }
 
     val seedDatabaseUseCase: SeedDatabaseUseCase by lazy {
-        SeedDatabaseUseCase(database.countryDao())
+        SeedDatabaseUseCase(database.countryDao(), database.userDao(), database.sessionDao(), context.dataStore)
+    }
+
+    val roomRepository: RoomRepository by lazy {
+        RoomRepository()
     }
 }

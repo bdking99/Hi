@@ -16,7 +16,8 @@ fun AppNavigation(appContainer: AppContainer) {
     val viewModelFactory = AppViewModelFactory(
         appContainer.authRepository,
         appContainer.userRepository,
-        appContainer.seedDatabaseUseCase
+        appContainer.seedDatabaseUseCase,
+        appContainer.roomRepository
     )
 
     NavHost(navController = navController, startDestination = Routes.Splash) {

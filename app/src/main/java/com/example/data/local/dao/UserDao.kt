@@ -32,6 +32,18 @@ interface UserDao {
     @Query("SELECT * FROM profiles WHERE userId = :userId")
     fun getProfileFlow(userId: String): Flow<ProfileEntity?>
 
+    @Query("UPDATE profiles SET coinBalance = :coins, earnings = :earnings WHERE userId = :userId")
+    suspend fun updateBalances(userId: String, coins: Long, earnings: Long)
+
+    @Query("UPDATE profiles SET coinBalance = coinBalance + :deltaCoins WHERE userId = :userId")
+    suspend fun addCoins(userId: String, deltaCoins: Long)
+
+    @Query("UPDATE users SET displayName = :displayName, avatar = :avatar, coverImage = :coverImage WHERE id = :userId")
+    suspend fun updateUserInfo(userId: String, displayName: String, avatar: String?, coverImage: String?)
+
+    @Query("UPDATE profiles SET bio = :bio WHERE userId = :userId")
+    suspend fun updateBio(userId: String, bio: String)
+
     @Transaction
     suspend fun registerUser(user: UserEntity, profile: ProfileEntity) {
         insertUser(user)

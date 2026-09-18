@@ -21,6 +21,7 @@ class AuthRepository(
 ) {
     companion object {
         val SESSION_TOKEN = stringPreferencesKey("session_token")
+        val WAS_EXPLICITLY_LOGGED_OUT = androidx.datastore.preferences.core.booleanPreferencesKey("was_explicitly_logged_out")
     }
 
     val currentSessionToken: Flow<String?> = dataStore.data.map { it[SESSION_TOKEN] }
@@ -59,6 +60,21 @@ class AuthRepository(
             )
 
             userDao.registerUser(user, profile)
+            
+            val sessionToken = UUID.randomUUID().toString()
+            val session = SessionEntity(
+                id = sessionToken,
+                userId = user.id,
+                deviceId = "Android",
+                deviceName = "Mobile Device",
+                expiresAt = System.currentTimeMillis() + 30L * 24 * 60 * 60 * 1000
+            )
+            sessionDao.insertSession(session)
+            dataStore.edit { 
+                it[SESSION_TOKEN] = sessionToken
+                it[WAS_EXPLICITLY_LOGGED_OUT] = false
+            }
+
             Result.success(user)
         } catch (e: Exception) {
             Result.failure(e)
@@ -84,8 +100,63 @@ class AuthRepository(
             )
             sessionDao.insertSession(session)
             
-            dataStore.edit { it[SESSION_TOKEN] = sessionToken }
+            dataStore.edit { 
+                it[SESSION_TOKEN] = sessionToken
+                it[WAS_EXPLICITLY_LOGGED_OUT] = false
+            }
 
+            Result.success(Pair(user, sessionToken))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun quickDemoLogin(): Result<Pair<UserEntity, String>> {
+        return try {
+            val defaultUserId = "fb_uid_884920"
+            var user = userDao.getUser(defaultUserId)
+            if (user == null) {
+                user = UserEntity(
+                    id = defaultUserId,
+                    publicUserId = "884920",
+                    username = "alex_king",
+                    displayName = "Alex King 👑",
+                    email = "alex.king@greatvoiceroom.com",
+                    phone = "+1 (555) 884-9201",
+                    passwordHash = SecurityUtils.hashPassword("password123"),
+                    avatar = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
+                    coverImage = null,
+                    countryId = 1,
+                    roleId = 2,
+                    isVerified = true
+                )
+                val profile = ProfileEntity(
+                    userId = defaultUserId,
+                    bio = "👑 Top Host & Live Gamer | Global Voice Gala Winner ✨",
+                    level = 18,
+                    vipLevel = 3,
+                    svipLevel = 1,
+                    followersCount = 1420,
+                    followingCount = 380,
+                    agencyId = "Star_Talent_Agency",
+                    coinBalance = 158400L,
+                    earnings = 4820L
+                )
+                userDao.registerUser(user, profile)
+            }
+            val sessionToken = UUID.randomUUID().toString()
+            val session = SessionEntity(
+                id = sessionToken,
+                userId = user.id,
+                deviceId = "Android",
+                deviceName = "Primary Android Device",
+                expiresAt = System.currentTimeMillis() + 30L * 24 * 60 * 60 * 1000
+            )
+            sessionDao.insertSession(session)
+            dataStore.edit {
+                it[SESSION_TOKEN] = sessionToken
+                it[WAS_EXPLICITLY_LOGGED_OUT] = false
+            }
             Result.success(Pair(user, sessionToken))
         } catch (e: Exception) {
             Result.failure(e)
@@ -99,6 +170,7 @@ class AuthRepository(
                 sessionDao.deleteSession(token)
             }
             it.remove(SESSION_TOKEN)
+            it[WAS_EXPLICITLY_LOGGED_OUT] = true
         }
     }
 

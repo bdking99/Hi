@@ -25,6 +25,18 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
         }
     }
 
+    fun quickDemoLogin() {
+        _uiState.value = AuthUiState.Loading
+        viewModelScope.launch {
+            val result = authRepository.quickDemoLogin()
+            if (result.isSuccess) {
+                _uiState.value = AuthUiState.Success
+            } else {
+                _uiState.value = AuthUiState.Error(result.exceptionOrNull()?.message ?: "Quick Login failed")
+            }
+        }
+    }
+
     fun register(username: String, email: String, displayName: String, passwordRaw: String) {
         _uiState.value = AuthUiState.Loading
         viewModelScope.launch {

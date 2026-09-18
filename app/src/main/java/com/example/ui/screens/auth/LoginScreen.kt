@@ -87,6 +87,18 @@ fun LoginScreen(
             },
             isLoading = uiState is AuthUiState.Loading
         )
+
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = {
+                viewModel.quickDemoLogin()
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary)
+        ) {
+            Text("⚡ Quick Demo Login (Firebase Session)")
+        }
         
         Spacer(modifier = Modifier.height(16.dp))
         TextButton(onClick = { 

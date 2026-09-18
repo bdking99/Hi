@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for authenticated session validation
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User profiles: authenticated users can read public profile data.
+    // Users can only write/update their own profile documents.
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
+
+      // Sub-collections under user (e.g. personal transactions, notifications)
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId);
+      }
+    }
+
+    // Active voice rooms: authenticated users can read rooms and participate.
+    // Host / members can write updates to room seats, state, and messages.
+    match /active_voice_rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated() && resource.data.hostId == request.auth.uid;
+
+      // Real-time chat messages in room
+      match /messages/{messageId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+      }
+
+      // Gifts sent in room
+      match /gifts/{giftId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+      }
+    }
+
+    // Gift transactions history
+    match /gift_transactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+    }
+
+    // System configurations and public reference data
+    match /system_settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Read-only for clients
+    }
+  }
+}
