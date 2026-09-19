@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -29,12 +30,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.data.model.FirebaseUserProfile
 import com.example.ui.theme.GoldPremium
 import com.example.ui.theme.TealPremium
+import com.example.utils.AccompanistPermissionHandler
+import com.example.utils.PermissionManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-val DarkSurfaceMenu = Color(0xFF1E212B)
+val DarkSurfaceMenu = Color(0xFF140F24)
+val DarkSurfaceCard = Color(0xFF1C1533)
+val GoldAccent = Color(0xFFFFD700)
+val CrystalDiamond = Color(0xFF00E5FF)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,13 +52,48 @@ fun ProfileScreen(
 ) {
     val user by viewModel.user.collectAsState()
     val profile by viewModel.profile.collectAsState()
+    val publicProfileState by viewModel.publicProfileState.collectAsState()
+
+    // Real-time Firestore profile data (falling back to Room entity)
+    val firestoreProfile: FirebaseUserProfile? = when (val state = publicProfileState) {
+        is ProfileUiState.Success -> state.data
+        else -> null
+    }
+
+    val dynamicCoinBalance = firestoreProfile?.coinBalance ?: (profile?.coinBalance ?: 158400L)
+    val dynamicDiamondBalance = firestoreProfile?.diamondBalance ?: (profile?.earnings ?: 4820L)
+    val dynamicVipLevel = firestoreProfile?.vipLevel ?: (profile?.vipLevel ?: 3)
+    val dynamicLevel = firestoreProfile?.level ?: (profile?.level ?: 18)
 
     var activeDialogTitle by remember { mutableStateOf<String?>(null) }
     var activeDialogContent by remember { mutableStateOf<String?>(null) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showVipDetailDialog by remember { mutableStateOf<VipBadgeInfo?>(null) }
+    var showPermissionRationale by remember { mutableStateOf(false) }
+    var pendingActionAfterPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
+
     val context = LocalContext.current
+
+    // Accompanist Permission Handler
+    AccompanistPermissionHandler(
+        onPermissionsGranted = {
+            pendingActionAfterPermission?.invoke()
+            pendingActionAfterPermission = null
+        },
+        showRationaleDialog = showPermissionRationale,
+        onDismissRationale = { showPermissionRationale = false }
+    )
+
+    fun executeWithPermissionCheck(action: () -> Unit) {
+        if (PermissionManager.areAllRequiredGranted(context)) {
+            action()
+        } else {
+            pendingActionAfterPermission = action
+            showPermissionRationale = true
+        }
+    }
 
     if (showSettingsSheet) {
         AppSettingsSheet(
@@ -61,15 +103,15 @@ fun ProfileScreen(
 
     if (showEditProfileDialog) {
         UserProfileSettingsDialog(
-            currentDisplayName = user?.displayName ?: "Alex King 👑",
-            currentBio = profile?.bio ?: "Voice room enthusiast and active party club member! 🎙️✨",
-            currentAvatar = user?.avatar,
-            currentCover = user?.coverImage,
+            currentDisplayName = firestoreProfile?.displayName ?: (user?.displayName ?: "Alex King 👑"),
+            currentBio = firestoreProfile?.bio ?: (profile?.bio ?: "Voice room enthusiast and active party club member! 🎙️✨"),
+            currentAvatar = firestoreProfile?.avatar ?: user?.avatar,
+            currentCover = firestoreProfile?.coverImage ?: user?.coverImage,
             onDismiss = { showEditProfileDialog = false },
             onSave = { displayName, bio, avatar, cover ->
                 viewModel.updateProfile(displayName, bio, avatar, cover) {
                     showEditProfileDialog = false
-                    Toast.makeText(context, "Profile updated successfully! ✨", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Profile updated and synced with Firestore! ✨", Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -78,56 +120,72 @@ fun ProfileScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF090414),
+                        Color(0xFF130A28),
+                        Color(0xFF0A0517)
+                    )
+                )
+            )
             .verticalScroll(rememberScrollState())
             .padding(bottom = 90.dp)
     ) {
         // --- 1. PROFILE HEADER SECTION ---
         ProfileHeaderSection(
-            displayName = user?.displayName ?: "Alex King 👑",
-            username = user?.username ?: "alex_king",
-            uid = user?.publicUserId ?: "884920",
-            avatarUrl = user?.avatar ?: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
-            vipLevel = profile?.vipLevel ?: 3,
-            hostLevel = profile?.level ?: 18,
-            followersCount = profile?.followingCount ?: 380,
-            fansCount = profile?.followersCount ?: 1420,
-            charmValue = (profile?.earnings ?: 4820L) * 4,
-            onSettingsClick = {
-                showSettingsSheet = true
-            },
+            displayName = firestoreProfile?.displayName ?: (user?.displayName ?: "Alex King 👑"),
+            username = firestoreProfile?.username ?: (user?.username ?: "alex_king"),
+            uid = firestoreProfile?.publicUserId ?: (user?.publicUserId ?: "884920"),
+            avatarUrl = firestoreProfile?.avatar ?: (user?.avatar ?: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150"),
+            vipLevel = dynamicVipLevel,
+            hostLevel = dynamicLevel,
+            followersCount = firestoreProfile?.followersCount ?: (profile?.followingCount ?: 380),
+            fansCount = firestoreProfile?.followingCount ?: (profile?.followersCount ?: 1420),
+            charmValue = dynamicDiamondBalance * 4,
+            onSettingsClick = { showSettingsSheet = true },
             onEditClick = {
-                showEditProfileDialog = true
+                executeWithPermissionCheck {
+                    showEditProfileDialog = true
+                }
             }
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- 2. VIP BADGE SHOWCASE CAROUSEL ---
+        VipBadgeSection(
+            currentVipLevel = dynamicVipLevel,
+            onBadgeClick = { badge -> showVipDetailDialog = badge }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- 2. WALLET SECTION (Coin & Diamond Cards) ---
+        // --- 3. DYNAMIC WALLET SECTION (Coin & Diamond Cards backed by Firestore) ---
         WalletSection(
-            coinBalance = profile?.coinBalance ?: 158400L,
-            diamondBalance = profile?.earnings ?: 4820L,
+            coinBalance = dynamicCoinBalance,
+            diamondBalance = dynamicDiamondBalance,
             onCoinClick = onWalletClick,
             onDiamondClick = {
-                activeDialogTitle = "💎 Diamond Exchange"
-                activeDialogContent = "Convert your ${profile?.earnings ?: 4820L} Diamonds into Coins or withdraw earnings to your linked bank account."
+                activeDialogTitle = "💎 Diamond Cashout & Exchange"
+                activeDialogContent = "You have %,d Diamonds synced from Firestore. Exchange for coins or request payout to your bank.".format(dynamicDiamondBalance)
             }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- 2.5 GIFT SHOWCASE SECTION ---
+        // --- 4. GIFT SHOWCASE SECTION ---
         GiftShowcaseSection(
-            receivedDiamonds = profile?.earnings ?: 4820L,
+            receivedDiamonds = dynamicDiamondBalance,
             onShowcaseClick = {
                 activeDialogTitle = "🎁 Luxury Gift Showcase"
-                activeDialogContent = "You have received 142 Luxury Gifts across Voice Clubs, generating ${profile?.earnings ?: 4820L} Diamonds!"
+                activeDialogContent = "You have received 142 Luxury Gifts across Voice Clubs, generating %,d Diamonds!".format(dynamicDiamondBalance)
             }
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
-        // --- 3. MENU GRID (4x2 Grid: VIP, Mall, Backpack, Task, Medal, Family, CP Nest, Wealth) ---
+        // --- 5. MENU GRID (4x2 Grid) ---
         FeatureGridSection(
             onFeatureClick = { title, desc ->
                 activeDialogTitle = title
@@ -135,13 +193,13 @@ fun ProfileScreen(
             }
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
-        // --- 4. ACTION LIST ---
-        val showAgency = (profile?.agencyId != null) || (user?.roleId ?: 1) > 1
+        // --- 6. ACTION LIST ---
+        val showAgency = (firestoreProfile?.agencyId != null) || (profile?.agencyId != null) || (user?.roleId ?: 1) > 1
         ActionListSection(
             showAgency = showAgency,
-            agencyName = profile?.agencyId ?: "Star_Talent_Agency",
+            agencyName = firestoreProfile?.agencyId ?: (profile?.agencyId ?: "Star_Talent_Agency"),
             onActionClick = { title, desc ->
                 activeDialogTitle = title
                 activeDialogContent = desc
@@ -151,15 +209,54 @@ fun ProfileScreen(
         )
     }
 
-    // Generic Feature / Action Details Dialog
+    // VIP Detail Dialog
+    if (showVipDetailDialog != null) {
+        val badge = showVipDetailDialog!!
+        AlertDialog(
+            onDismissRequest = { showVipDetailDialog = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(badge.icon, fontSize = 24.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(badge.title, fontWeight = FontWeight.Black, color = GoldPremium)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(badge.description, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Privilege Perks:", fontWeight = FontWeight.Bold, color = TealPremium, fontSize = 13.sp)
+                    badge.perks.forEach { perk ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("✨", fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(perk, fontSize = 12.sp, color = Color.White.copy(alpha = 0.85f))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showVipDetailDialog = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldPremium)
+                ) {
+                    Text("Got It", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = Color(0xFF1B1430),
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
+
+    // Generic Feature Dialog
     if (activeDialogTitle != null) {
         AlertDialog(
             onDismissRequest = {
                 activeDialogTitle = null
                 activeDialogContent = null
             },
-            title = { Text(activeDialogTitle ?: "", fontWeight = FontWeight.Bold) },
-            text = { Text(activeDialogContent ?: "", style = MaterialTheme.typography.bodyMedium) },
+            title = { Text(activeDialogTitle ?: "", fontWeight = FontWeight.Bold, color = GoldPremium) },
+            text = { Text(activeDialogContent ?: "", style = MaterialTheme.typography.bodyMedium, color = Color.White) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -170,15 +267,17 @@ fun ProfileScreen(
                 ) {
                     Text("OK", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
-            }
+            },
+            containerColor = Color(0xFF1B1430),
+            shape = RoundedCornerShape(20.dp)
         )
     }
 
-    // Logout Confirmation Dialog
+    // Logout Dialog
     if (showLogoutConfirm) {
         AlertDialog(
             onDismissRequest = { showLogoutConfirm = false },
-            title = { Text("Log Out?") },
+            title = { Text("Log Out?", fontWeight = FontWeight.Bold) },
             text = { Text("Are you sure you want to log out of Great Voice Room? Your persistent session will be cleared.") },
             confirmButton = {
                 Button(
@@ -188,15 +287,147 @@ fun ProfileScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Log Out", color = Color.White)
+                    Text("Log Out", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutConfirm = false }) {
                     Text("Cancel")
                 }
-            }
+            },
+            containerColor = Color(0xFF1B1430),
+            shape = RoundedCornerShape(20.dp)
         )
+    }
+}
+
+// ----------------------------------------------------
+// VIP Badge Data & Showcase Section
+// ----------------------------------------------------
+data class VipBadgeInfo(
+    val id: String,
+    val title: String,
+    val icon: String,
+    val levelReq: Int,
+    val description: String,
+    val perks: List<String>,
+    val isUnlocked: Boolean
+)
+
+@Composable
+fun VipBadgeSection(
+    currentVipLevel: Int,
+    onBadgeClick: (VipBadgeInfo) -> Unit
+) {
+    val badges = listOf(
+        VipBadgeInfo(
+            id = "vip_crown",
+            title = "VIP $currentVipLevel Aristocrat",
+            icon = "👑",
+            levelReq = 1,
+            description = "Status of distinguished nobility in all voice rooms.",
+            perks = listOf("Golden Nameplate", "Special Entry Banner", "Stage Mic Priority"),
+            isUnlocked = currentVipLevel >= 1
+        ),
+        VipBadgeInfo(
+            id = "svip_dragon",
+            title = "SVIP Dragon Sovereign",
+            icon = "🐉",
+            levelReq = 5,
+            description = "Supreme status for high rollers and room benefactors.",
+            perks = listOf("Dragon Mount Entry", "Anti-Mute & Anti-Kick", "Custom Room Frame"),
+            isUnlocked = currentVipLevel >= 5
+        ),
+        VipBadgeInfo(
+            id = "top_gifter",
+            title = "Diamond Gifter",
+            icon = "💎",
+            levelReq = 3,
+            description = "Awarded to generous gift senders who light up live stages.",
+            perks = listOf("Sparkling Chat Bubble", "Marquee Gift Announcement", "Exclusive Rose Aura"),
+            isUnlocked = currentVipLevel >= 3
+        ),
+        VipBadgeInfo(
+            id = "star_singer",
+            title = "Star Vocalist",
+            icon = "🎙️",
+            levelReq = 2,
+            description = "Verified talent badge for recognized party singers.",
+            perks = listOf("HD Studio Audio Enhancement", "Spotlight Equalizer", "Audience Follower Boost"),
+            isUnlocked = true
+        )
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .testTag("vip_badge_section"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurfaceCard),
+        border = BorderStroke(1.dp, GoldPremium.copy(alpha = 0.35f))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("✨", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "VIP Prestige & Badges",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                }
+                Text(
+                    text = "Tier Lv.$currentVipLevel",
+                    color = GoldPremium,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                badges.forEach { badge ->
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onBadgeClick(badge) },
+                        color = if (badge.isUnlocked) Color(0xFF2E204D) else Color(0xFF181325),
+                        border = BorderStroke(
+                            1.dp,
+                            if (badge.isUnlocked) GoldPremium.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.1f)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
+                        ) {
+                            Text(badge.icon, fontSize = 20.sp)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = badge.title.split(" ").take(2).joinToString(" "),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (badge.isUnlocked) Color.White else Color.Gray,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -220,46 +451,6 @@ fun ProfileHeaderSection(
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
-    // Spring animations
-    val headerAlpha = remember { Animatable(0f) }
-    val headerOffsetY = remember { Animatable(-35f) }
-    val avatarScale = remember { Animatable(0.6f) }
-    val avatarAlpha = remember { Animatable(0f) }
-    val contentAlpha = remember { Animatable(0f) }
-    val contentOffsetY = remember { Animatable(30f) }
-    val statsAlpha = remember { Animatable(0f) }
-    val statsScale = remember { Animatable(0.85f) }
-
-    LaunchedEffect(Unit) {
-        launch { headerAlpha.animateTo(1f, tween(350)) }
-        launch { headerOffsetY.animateTo(0f, spring(Spring.DampingRatioLowBouncy, Spring.StiffnessMediumLow)) }
-        launch {
-            delay(100L)
-            avatarAlpha.animateTo(1f, tween(200))
-        }
-        launch {
-            delay(100L)
-            avatarScale.animateTo(1f, spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessLow))
-        }
-        launch {
-            delay(180L)
-            contentAlpha.animateTo(1f, tween(220))
-        }
-        launch {
-            delay(180L)
-            contentOffsetY.animateTo(0f, spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessMediumLow))
-        }
-        launch {
-            delay(260L)
-            statsAlpha.animateTo(1f, tween(220))
-        }
-        launch {
-            delay(260L)
-            statsScale.animateTo(1f, spring(Spring.DampingRatioLowBouncy, Spring.StiffnessMediumLow))
-        }
-    }
-
-    // 3D border rotation animation for halo effect
     val infiniteTransition = rememberInfiniteTransition(label = "halo")
     val borderRotation by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -272,42 +463,33 @@ fun ProfileHeaderSection(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("profile_header_section")
-            .graphicsLayer {
-                alpha = headerAlpha.value
-                translationY = headerOffsetY.value
-            }
             .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(TealPremium.copy(alpha = 0.25f), MaterialTheme.colorScheme.background)
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF29104D).copy(alpha = 0.6f), Color.Transparent)
                 )
             )
-            .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp)
+            .padding(top = 40.dp, start = 16.dp, end = 16.dp, bottom = 10.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             
             // Top action icons
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 IconButton(onClick = onEditClick, modifier = Modifier.testTag("edit_profile_button")) {
-                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Profile", tint = MaterialTheme.colorScheme.onBackground)
+                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Profile", tint = GoldPremium)
                 }
                 IconButton(onClick = onSettingsClick, modifier = Modifier.testTag("settings_button")) {
-                    Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = MaterialTheme.colorScheme.onBackground)
+                    Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = Color.White)
                 }
             }
 
-            // Profile Picture with 3D Animated Rotating Border Halo
+            // Profile Picture with Rotating Border Halo
             Box(
                 modifier = Modifier
                     .size(108.dp)
-                    .testTag("avatar_container")
-                    .graphicsLayer {
-                        scaleX = avatarScale.value
-                        scaleY = avatarScale.value
-                        alpha = avatarAlpha.value
-                    },
+                    .testTag("avatar_container"),
                 contentAlignment = Alignment.Center
             ) {
-                // Outer 3D animated sweep halo
+                // Outer sweep halo
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -325,7 +507,7 @@ fun ProfileHeaderSection(
                     modifier = Modifier
                         .size(98.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                        .background(DarkSurfaceCard),
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
@@ -346,27 +528,21 @@ fun ProfileHeaderSection(
                             .border(1.dp, Color.White, RoundedCornerShape(12.dp))
                             .padding(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("VIP $vipLevel", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
+                        Text("👑 VIP $vipLevel", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // User name, Badges, UID & Gender
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.graphicsLayer {
-                    alpha = contentAlpha.value
-                    translationY = contentOffsetY.value
-                }
-            ) {
+            // User name, Badges & UID
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = displayName,
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = Color.White
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(Icons.Filled.Verified, contentDescription = "Verified", tint = TealPremium, modifier = Modifier.size(18.dp))
@@ -374,12 +550,10 @@ fun ProfileHeaderSection(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // UID (with Copy button) + Gender Chip + Level Badge
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Luxury Golden UID Badge with copy action
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = Color(0xFF221A38),
@@ -399,7 +573,6 @@ fun ProfileHeaderSection(
                         }
                     }
 
-                    // Gender Badge (♂ Male 24)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = Color(0xFF2979FF).copy(alpha = 0.2f),
@@ -414,7 +587,6 @@ fun ProfileHeaderSection(
                         )
                     }
 
-                    // Host Level Badge (Lv.18)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = GoldPremium.copy(alpha = 0.25f),
@@ -431,21 +603,15 @@ fun ProfileHeaderSection(
                 }
             }
 
-            Spacer(modifier = Modifier.height(22.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // Stats Bar: Concern (Following), Fan (Followers), Charm Value
+            // Stats Bar
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer {
-                        scaleX = statsScale.value
-                        scaleY = statsScale.value
-                        alpha = statsAlpha.value
-                    },
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                StatItem("Concern", followersCount.toString())
-                StatItem("Fan", fansCount.toString())
+                StatItem("Following", followersCount.toString())
+                StatItem("Followers", fansCount.toString())
                 StatItem("Charm Value", "⭐ %,d".format(charmValue))
             }
         }
@@ -455,14 +621,14 @@ fun ProfileHeaderSection(
 @Composable
 fun StatItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(modifier = Modifier.height(2.dp))
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.6f))
     }
 }
 
 // ----------------------------------------------------
-// Wallet Section: Coin Card & Diamond Card
+// Wallet Section: Dynamic Coin & Diamond Cards backed by Firestore
 // ----------------------------------------------------
 @Composable
 fun WalletSection(
@@ -481,15 +647,16 @@ fun WalletSection(
         Card(
             modifier = Modifier
                 .weight(1f)
-                .height(95.dp)
-                .clickable { onCoinClick() },
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1B182B))
+                .height(100.dp)
+                .clickable { onCoinClick() }
+                .testTag("coin_wallet_card"),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurfaceCard),
+            border = BorderStroke(1.dp, GoldPremium.copy(alpha = 0.4f))
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .border(1.dp, GoldPremium.copy(alpha = 0.3f), RoundedCornerShape(18.dp))
                     .padding(12.dp)
             ) {
                 Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
@@ -501,19 +668,19 @@ fun WalletSection(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("🪙", fontSize = 18.sp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Coin", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+                            Text("Coin Balance", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
                         }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = GoldPremium
                         ) {
-                            Text("+", fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp))
+                            Text("+ Top Up", fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                         }
                     }
                     Text(
                         text = "%,d".format(coinBalance),
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
+                        fontWeight = FontWeight.Black,
                         color = GoldPremium
                     )
                 }
@@ -524,15 +691,16 @@ fun WalletSection(
         Card(
             modifier = Modifier
                 .weight(1f)
-                .height(95.dp)
-                .clickable { onDiamondClick() },
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF15222E))
+                .height(100.dp)
+                .clickable { onDiamondClick() }
+                .testTag("diamond_wallet_card"),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurfaceCard),
+            border = BorderStroke(1.dp, CrystalDiamond.copy(alpha = 0.4f))
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .border(1.dp, TealPremium.copy(alpha = 0.3f), RoundedCornerShape(18.dp))
                     .padding(12.dp)
             ) {
                 Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
@@ -544,20 +712,20 @@ fun WalletSection(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("💎", fontSize = 18.sp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Diamond", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+                            Text("Diamond Earn", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
                         }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = TealPremium
+                            color = CrystalDiamond
                         ) {
-                            Text("Exchange", fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                            Text("Exchange", fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                         }
                     }
                     Text(
                         text = "%,d".format(diamondBalance),
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = TealPremium
+                        fontWeight = FontWeight.Black,
+                        color = CrystalDiamond
                     )
                 }
             }
@@ -566,7 +734,7 @@ fun WalletSection(
 }
 
 // ----------------------------------------------------
-// Feature Grid (4x2 Layout: VIP, Mall, Backpack, Task, Medal, Family, CP Nest, Wealth)
+// Feature Grid (4x2 Layout)
 // ----------------------------------------------------
 @Composable
 fun FeatureGridSection(
@@ -588,11 +756,11 @@ fun FeatureGridSection(
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
             .testTag("feature_grid"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Row 1 (4 items)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 for (i in 0..3) {
                     val (title, icon, desc) = features[i]
@@ -605,7 +773,6 @@ fun FeatureGridSection(
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
-            // Row 2 (4 items)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 for (i in 4..7) {
                     val (title, icon, desc) = features[i]
@@ -656,7 +823,7 @@ fun FeatureGridItem(
                 .size(48.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(
-                    brush = Brush.linearGradient(
+                    Brush.linearGradient(
                         colors = listOf(TealPremium.copy(alpha = 0.2f), Color.Transparent)
                     )
                 )
@@ -666,12 +833,12 @@ fun FeatureGridItem(
             Icon(icon, contentDescription = title, tint = GoldPremium, modifier = Modifier.size(24.dp))
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Text(title, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(title, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.8f))
     }
 }
 
 // ----------------------------------------------------
-// Action List Section (Host data, Reward Records, Interactive Games Records)
+// Action List Section
 // ----------------------------------------------------
 @Composable
 fun ActionListSection(
@@ -685,12 +852,13 @@ fun ActionListSection(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
         Column {
             ActionListItem(
-                title = "Host Data",
+                title = "Host Data Analytics",
                 icon = Icons.Outlined.Analytics,
                 onClick = {
                     onActionClick(
@@ -712,12 +880,12 @@ fun ActionListSection(
                 )
             }
             ActionListItem(
-                title = "Reward Records",
+                title = "Reward & Income Records",
                 icon = Icons.Outlined.CardGiftcard,
                 onClick = {
                     onActionClick(
-                        "🎁 Reward & Transaction Records",
-                        "+200 Coins (Daily Login Bonus)\n+1,000 Coins (Lucky Roulette Spin)\n+500 Coins (Host Performance Target)\n-100 Coins (Zeus Slot Spin)"
+                        "🎁 Reward Records",
+                        "+200 Coins (Daily Login Bonus)\n+1,000 Coins (Dragon Tiger Game Win)\n+500 Coins (Host Performance Target)"
                     )
                 }
             )
@@ -727,7 +895,7 @@ fun ActionListSection(
                 onClick = {
                     onActionClick(
                         "🎮 Interactive Games Records",
-                        "Lucky Roulette: 12 Spins • 2 Jackpots won\nZeus Slot: 8 Spins • 5,000 Coins Won\nLuxury Car: 3 Bets • +800 Coins"
+                        "Dragon vs Tiger: 18 Rounds • 8,400 Coins Won\nLucky Roulette: 12 Spins • 2 Jackpots won"
                     )
                 }
             )
@@ -740,8 +908,9 @@ fun ActionListSection(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
         Column {
             ActionListItem(
@@ -755,7 +924,7 @@ fun ActionListSection(
                 onClick = {
                     onActionClick(
                         "💡 Feedback & Help",
-                        "Need assistance or have suggestions? Our 24/7 Creator Support team is here to help."
+                        "Need assistance? 24/7 Creator Support is available at support@greatvoiceroom.com"
                     )
                 }
             )
@@ -764,7 +933,7 @@ fun ActionListSection(
                 icon = Icons.Outlined.ExitToApp,
                 onClick = onLogoutPrompt,
                 showArrow = false,
-                tint = MaterialTheme.colorScheme.error
+                tint = Color(0xFFFF5252)
             )
         }
     }
@@ -776,7 +945,7 @@ fun ActionListItem(
     icon: ImageVector,
     onClick: () -> Unit = {},
     showArrow: Boolean = true,
-    tint: Color = MaterialTheme.colorScheme.onBackground
+    tint: Color = Color.White
 ) {
     Row(
         modifier = Modifier
@@ -789,7 +958,7 @@ fun ActionListItem(
         Spacer(modifier = Modifier.width(16.dp))
         Text(title, style = MaterialTheme.typography.bodyLarge, color = tint, modifier = Modifier.weight(1f))
         if (showArrow) {
-            Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "Go", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "Go", tint = Color.White.copy(alpha = 0.5f))
         }
     }
 }
@@ -806,7 +975,7 @@ fun GiftShowcaseSection(
             .clip(RoundedCornerShape(20.dp))
             .clickable { onShowcaseClick() }
             .testTag("gift_showcase_section"),
-        color = Color(0xFF1E1A2F),
+        color = DarkSurfaceCard,
         shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, GoldPremium.copy(alpha = 0.35f))
     ) {
@@ -832,7 +1001,7 @@ fun GiftShowcaseSection(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "💎 $receivedDiamonds Diamonds",
+                        text = "💎 %,d Diamonds".format(receivedDiamonds),
                         color = GoldPremium,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp

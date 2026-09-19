@@ -99,6 +99,27 @@ fun RoomScreen(
     var showSearchDialog by remember { mutableStateOf(false) }
     var showCreateRoomDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var showAppPermissionRationale by remember { mutableStateOf(false) }
+    var pendingActionAfterPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val mainContext = LocalContext.current
+
+    com.example.utils.AccompanistPermissionHandler(
+        onPermissionsGranted = {
+            pendingActionAfterPermission?.invoke()
+            pendingActionAfterPermission = null
+        },
+        showRationaleDialog = showAppPermissionRationale,
+        onDismissRationale = { showAppPermissionRationale = false }
+    )
+
+    fun executeWithPermissionCheck(action: () -> Unit) {
+        if (com.example.utils.PermissionManager.areAllRequiredGranted(mainContext)) {
+            action()
+        } else {
+            pendingActionAfterPermission = action
+            showAppPermissionRationale = true
+        }
+    }
 
     // Sample Banner Data
     val banners = remember {
@@ -289,7 +310,11 @@ fun RoomScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { showCreateRoomDialog = true },
+                onClick = {
+                    executeWithPermissionCheck {
+                        showCreateRoomDialog = true
+                    }
+                },
                 containerColor = TealPremium,
                 contentColor = Color.Black,
                 icon = { Icon(Icons.Default.Add, contentDescription = "Create Room") },
@@ -390,8 +415,10 @@ fun RoomScreen(
                             room = room,
                             modifier = Modifier.weight(1f),
                             onClick = {
-                                selectedRoomForLive = room
-                                viewModel?.selectRoom(room.id)
+                                executeWithPermissionCheck {
+                                    selectedRoomForLive = room
+                                    viewModel?.selectRoom(room.id)
+                                }
                             }
                         )
                     }

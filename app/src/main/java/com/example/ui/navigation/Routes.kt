@@ -1,6 +1,7 @@
 package com.example.ui.navigation
 
 object Routes {
+    const val Launch = "launch"
     const val Splash = "splash"
     const val Onboarding = "onboarding"
     const val Login = "login"

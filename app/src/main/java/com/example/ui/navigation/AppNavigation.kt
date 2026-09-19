@@ -6,6 +6,7 @@ import androidx.navigation.compose.*
 import com.example.di.AppContainer
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.screens.auth.RegisterScreen
+import com.example.ui.screens.launch.LaunchScreen
 import com.example.ui.screens.splash.SplashScreen
 import com.example.ui.screens.wallet.WalletScreen
 import com.example.utils.AppViewModelFactory
@@ -20,7 +21,18 @@ fun AppNavigation(appContainer: AppContainer) {
         appContainer.roomRepository
     )
 
-    NavHost(navController = navController, startDestination = Routes.Splash) {
+    NavHost(navController = navController, startDestination = Routes.Launch) {
+        // Launch Screen: Great Voice Room logo with smooth fade-in and scale animation
+        composable(Routes.Launch) {
+            LaunchScreen(
+                onNavigateToMain = {
+                    navController.navigate(Routes.Main) {
+                        popUpTo(Routes.Launch) { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable(Routes.Splash) {
             SplashScreen(
                 viewModel = viewModel(factory = viewModelFactory),
