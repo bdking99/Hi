@@ -216,6 +216,38 @@ class RoomRepository {
     }
 
     /**
+     * Delete a voice room by ID.
+     */
+    suspend fun deleteRoom(roomId: String): Result<Unit> {
+        val currentList = _roomsState.value.filter { it.id != roomId }
+        _roomsState.value = currentList
+        _roomDetailMap.remove(roomId)
+        _roomChatMap.remove(roomId)
+        _roomGiftMap.remove(roomId)
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore()
+                firestore?.collection(collectionPath)?.document(roomId)?.delete()?.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Clear / reset rooms.
+     */
+    suspend fun clearAllRooms(): Result<Unit> {
+        _roomsState.value = emptyList()
+        _roomDetailMap.clear()
+        _roomChatMap.clear()
+        _roomGiftMap.clear()
+        return Result.success(Unit)
+    }
+
+    /**
      * User takes a seat on the stage in real-time.
      */
     suspend fun takeSeat(roomId: String, seatIndex: Int, user: FirebaseUserProfile): Result<Unit> {

@@ -124,6 +124,17 @@ class RoomViewModel(
         _currentRoomId.value = null
     }
 
+    fun deleteRoom(roomId: String, onDeleted: () -> Unit = {}) {
+        viewModelScope.launch {
+            roomRepository.deleteRoom(roomId)
+            if (_currentRoomId.value == roomId) {
+                _currentRoomId.value = null
+            }
+            _uiNotice.value = "Room deleted successfully."
+            onDeleted()
+        }
+    }
+
     fun clearNotice() {
         _uiNotice.value = null
     }

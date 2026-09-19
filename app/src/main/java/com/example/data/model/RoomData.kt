@@ -34,7 +34,7 @@ data class RoomData(
     val roomFrameUrl: String = "",        // VIP animated border around the room
     
     // 📊 Engagement & Tracking
-    val viewerCount: Int = 1,       // Changed to Int for math/sorting
+    val viewerCount: String = "1.2k",
     val seats: List<SeatData> = emptyList(),
     val activeUserIds: List<String> = emptyList(),
     

@@ -26,6 +26,8 @@ data class ChatMessage(
     val type: MessageType = MessageType.TEXT, // TEXT, GIFT, SYSTEM, ENTRY
     val chatBubbleUrl: String? = null,        // Custom background for VIP chat bubbles
     val replyToMessageId: String? = null,     // Threading support
+    val isSystem: Boolean = false,
+    val isSystemMessage: Boolean = false,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -94,6 +96,7 @@ data class FirebaseUserProfile(
     // Economy
     val coinBalance: Long = 2500L,       // Currency for spending
     val diamondBalance: Long = 0L,       // Currency earned from receiving gifts (cash-out currency)
+    val receivedDiamonds: Long = 0L,
     val giftsReceivedCount: Int = 0,
     
     // Social & Agency
@@ -110,26 +113,20 @@ data class FirebaseUserProfile(
     val isOnline: Boolean = true,
     val invisibleMode: Boolean = false,  // VIP feature to hide online/entry status
     val lastActive: Long = System.currentTimeMillis()
-)
+) {
+    val earnings: Long get() = if (diamondBalance > 0) diamondBalance else receivedDiamonds
+}
 
 // 💳 WALLET TRANSACTION - Added status, reference mapping, and balances
 data class CoinTransactionItem(
     val id: String = "",
     val userId: String = "",
     val referenceId: String = "",        // Links back to GiftTransaction.id or PaymentIntent ID
-    val type: TransactionType = TransactionType.RECHARGE, 
+    val type: String = "RECHARGE",
     val amount: Long = 0L,
     val balanceAfter: Long = 0L,         // Crucial for auditing missing funds
     val title: String = "",
     val description: String = "",
-    val status: TransactionStatus = TransactionStatus.COMPLETED,
+    val status: String = "COMPLETED",
     val timestamp: Long = System.currentTimeMillis()
 )
-
-enum class TransactionType {
-    RECHARGE, GIFT_SENT, GIFT_RECEIVED, WITHDRAWAL, SYSTEM_REWARD
-}
-
-enum class TransactionStatus {
-    PENDING, COMPLETED, FAILED, REFUNDED
-}

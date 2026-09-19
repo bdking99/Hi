@@ -12,7 +12,6 @@ import com.example.ui.screens.room.RoomViewModel
 import com.example.data.model.*
 import com.example.utils.AppViewModelFactory
 import com.example.ui.components.SpeakerSeat
-import com.example.ui.components.RequestMicrophonePermission
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -1119,6 +1118,8 @@ fun LiveVoiceRoomBottomSheet(
     var giftRecipientName by remember { mutableStateOf(room.hostName) }
     var showParticipantList by remember { mutableStateOf(false) }
     var celebrationGift by remember { mutableStateOf<GiftTransaction?>(null) }
+    var showDeleteRoomConfirm by remember { mutableStateOf(false) }
+    var showInRoomDragonTiger by remember { mutableStateOf(false) }
 
     // Microphone runtime permission state
     val context = LocalContext.current
@@ -1203,7 +1204,46 @@ fun LiveVoiceRoomBottomSheet(
         )
     }
 
-    // Floating celebration banner listener
+    // In-Room Dragon vs Tiger Game Arena
+    if (showInRoomDragonTiger) {
+        com.example.ui.screens.game.DragonVsTigerArena(
+            coinBalance = currentUser.coinBalance,
+            onDismiss = { showInRoomDragonTiger = false },
+            onBetPlaced = { betAmt ->
+                // Deduct coins locally
+            },
+            onWinWon = { wonAmt ->
+                viewModel?.rechargeCoins(wonAmt, "Dragon Tiger Win")
+            }
+        )
+    }
+
+    // Delete Room Confirmation Dialog
+    if (showDeleteRoomConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteRoomConfirm = false },
+            title = { Text("Delete Room permanently?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete '${currentRoomData?.title ?: room.title}'? This action cannot be undone.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteRoomConfirm = false
+                        viewModel?.deleteRoom(room.id) {
+                            onDismiss()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                ) {
+                    Text("Delete Room", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteRoomConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
     LaunchedEffect(latestGift) {
         if (latestGift != null) {
             celebrationGift = latestGift
@@ -1436,6 +1476,19 @@ fun LiveVoiceRoomBottomSheet(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // In-Room Game Button (Dragon vs Tiger)
+                    IconButton(
+                        onClick = { showInRoomDragonTiger = true },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(GoldPremium.copy(alpha = 0.2f))
+                            .border(1.dp, GoldPremium.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                    ) {
+                        Text("🐉", fontSize = 16.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
                     // Participants Button
                     IconButton(
                         onClick = { showParticipantList = true },
@@ -1445,6 +1498,20 @@ fun LiveVoiceRoomBottomSheet(
                             .testTag("open_participants_button")
                     ) {
                         Icon(Icons.Default.People, contentDescription = "Participants", tint = TealPremium)
+                    }
+
+                    if (isHost) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        // Delete Room Button for Host
+                        IconButton(
+                            onClick = { showDeleteRoomConfirm = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFFE53935).copy(alpha = 0.2f))
+                                .border(1.dp, Color(0xFFE53935), RoundedCornerShape(12.dp))
+                        ) {
+                            Icon(Icons.Default.DeleteForever, contentDescription = "Delete Room", tint = Color(0xFFFF5252))
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(6.dp))

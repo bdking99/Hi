@@ -5,7 +5,6 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,12 +64,18 @@ fun GameScreen(
     var diamondBalance by remember { mutableLongStateOf(4820L) }
     val coroutineScope = rememberCoroutineScope()
 
+    // Sync with external coins
+    LaunchedEffect(currentCoins) {
+        coinBalance = currentCoins
+    }
+
     // Interactive Roulette Wheel State
     val rotation = remember { Animatable(0f) }
     var isSpinning by remember { mutableStateOf(false) }
     var wonPrize by remember { mutableStateOf<WheelPrize?>(null) }
     var showWonDialog by remember { mutableStateOf(false) }
     var activeMiniGame by remember { mutableStateOf<MiniGame?>(null) }
+    var showDragonTigerArena by remember { mutableStateOf(false) }
     var showRechargeModal by remember { mutableStateOf(false) }
 
     val wheelPrizes = remember {
@@ -89,28 +94,38 @@ fun GameScreen(
     val miniGames = remember {
         listOf(
             MiniGame(
+                id = "g_dvt",
+                name = "Dragon vs Tiger",
+                subtitle = "Live Casino Duel (2X / 8X)",
+                jackpot = "8,450,000",
+                playersCount = "🐉 8.6k Live",
+                emoji = "🐉",
+                themeGradient = listOf(Color(0xFF5B0E2D), Color(0xFF1E0A3C), Color(0xFF0A0314)),
+                badge = "🔥 TOP CASINO"
+            ),
+            MiniGame(
                 id = "g1",
-                name = "Zeus Slot",
+                name = "Zeus Slot 777",
                 subtitle = "Olympus Lightning Jackpot",
                 jackpot = "4,850,200",
-                playersCount = "🔥 4.2k",
+                playersCount = "⚡ 4.2k",
                 emoji = "⚡",
                 themeGradient = listOf(Color(0xFF200122), Color(0xFF6f0000)),
                 badge = "HOT JACKPOT"
             ),
             MiniGame(
                 id = "g2",
-                name = "Luxury Car",
-                subtitle = "Supercar Roulette",
+                name = "Greedy Fruit Wheel",
+                subtitle = "Fruit Multiplier Roulette",
                 jackpot = "2,380,000",
-                playersCount = "🏎️ 3.1k",
-                emoji = "🏎️",
+                playersCount = "🍉 3.1k",
+                emoji = "🍉",
                 themeGradient = listOf(Color(0xFF0f0c29), Color(0xFF302b63), Color(0xFF24243e)),
-                badge = "LIVE BET"
+                badge = "x50 BONUS"
             ),
             MiniGame(
                 id = "g3",
-                name = "Cleopatra",
+                name = "Cleopatra's Gold",
                 subtitle = "Pharaoh's Treasure Tomb",
                 jackpot = "3,120,400",
                 playersCount = "👑 2.8k",
@@ -120,7 +135,7 @@ fun GameScreen(
             ),
             MiniGame(
                 id = "g4",
-                name = "Lucky 777 Fruit",
+                name = "Lucky 777 Classic",
                 subtitle = "Classic Vegas 3-Reel Slots",
                 jackpot = "1,940,000",
                 playersCount = "🍒 2.2k",
@@ -130,31 +145,35 @@ fun GameScreen(
             ),
             MiniGame(
                 id = "g5",
-                name = "Greedy Pirate",
+                name = "Pirate Treasure",
                 subtitle = "Pirate Island Dice & Chest",
                 jackpot = "980,000",
                 playersCount = "🏴‍☠️ 1.7k",
                 emoji = "🏴‍☠️",
                 themeGradient = listOf(Color(0xFF16222A), Color(0xFF3A6073)),
                 badge = "x50 BONUS"
-            ),
-            MiniGame(
-                id = "g6",
-                name = "Dragon vs Tiger",
-                subtitle = "High-Stakes Live Duel",
-                jackpot = "5,400,000",
-                playersCount = "🐉 5.6k",
-                emoji = "🐉",
-                themeGradient = listOf(Color(0xFF4b1248), Color(0xFFf0c27b)),
-                badge = "VIP HIGH ROLLER"
             )
         )
+    }
+
+    if (showDragonTigerArena) {
+        DragonVsTigerArena(
+            coinBalance = coinBalance,
+            onDismiss = { showDragonTigerArena = false },
+            onBetPlaced = { betAmt ->
+                coinBalance = maxOf(0L, coinBalance - betAmt)
+            },
+            onWinWon = { wonAmt ->
+                coinBalance += wonAmt
+                onCoinWon(wonAmt)
+            }
+        )
+        return
     }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            // Header: Coin balance with Add (+) button and VIP level badge
             GameHeader(
                 coinBalance = coinBalance,
                 vipLevel = vipLevel,
@@ -172,6 +191,14 @@ fun GameScreen(
             item {
                 LiveWinnerTicker()
                 Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Featured Hero Banner: Dragon vs Tiger Live Arena
+            item {
+                DragonVsTigerHeroBanner(
+                    onPlayClick = { showDragonTigerArena = true }
+                )
+                Spacer(modifier = Modifier.height(20.dp))
             }
 
             // Main Attraction: 3D Roulette Wheel
@@ -199,7 +226,6 @@ fun GameScreen(
                         if (!isSpinning) {
                             coroutineScope.launch {
                                 isSpinning = true
-                                // Random winning index
                                 val winningIndex = (0 until wheelPrizes.size).random()
                                 val targetDegrees = 360f * 6 + (winningIndex * (360f / wheelPrizes.size))
                                 rotation.snapTo(rotation.value % 360f)
@@ -234,13 +260,13 @@ fun GameScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "🎮 Voice Arcade Games",
+                        text = "🎮 Original Casino & Arcade Games",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = "Real-time Multiplayers",
+                        text = "Live Multiplayers",
                         style = MaterialTheme.typography.labelMedium,
                         color = TealPremium
                     )
@@ -261,7 +287,13 @@ fun GameScreen(
                         GameCard(
                             game = game,
                             modifier = Modifier.weight(1f),
-                            onPlayClick = { activeMiniGame = game }
+                            onPlayClick = {
+                                if (game.id == "g_dvt") {
+                                    showDragonTigerArena = true
+                                } else {
+                                    activeMiniGame = game
+                                }
+                            }
                         )
                     }
                     if (rowGames.size == 1) {
@@ -304,7 +336,7 @@ fun GameScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Your updated balance is ${coinBalance} Coins",
+                        "Your updated balance is %,d Coins".format(coinBalance),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -345,6 +377,122 @@ fun GameScreen(
                 showRechargeModal = false
             }
         )
+    }
+}
+
+// ----------------------------------------------------
+// Dragon vs Tiger Hero Live Banner
+// ----------------------------------------------------
+@Composable
+fun DragonVsTigerHeroBanner(
+    onPlayClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clickable { onPlayClick() }
+            .shadow(10.dp, RoundedCornerShape(20.dp), spotColor = Color(0xFFFF5722)),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color(0xFF6A040F),
+                            Color(0xFF370617),
+                            Color(0xFF03071E)
+                        )
+                    )
+                )
+                .border(
+                    2.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFFFFB703), Color(0xFFFB8500), Color(0xFF023047))),
+                    RoundedCornerShape(20.dp)
+                )
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFD00000)
+                        ) {
+                            Text(
+                                text = "🔴 LIVE CASINO",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("8,450+ Online", color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "🐉 DRAGON VS TIGER 🐯",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White
+                    )
+
+                    Text(
+                        text = "Instant 2X & 8X Tie payouts! Real live casino dealer tables.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GoldPremium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = GoldPremium
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "ENTER LIVE ARENA ⚔️",
+                                color = Color.Black,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // Arena 3D Badge
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF240046))
+                        .border(2.dp, GoldPremium, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("🐉", fontSize = 24.sp)
+                        Text("VS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = GoldPremium)
+                        Text("🐯", fontSize = 24.sp)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -446,9 +594,9 @@ fun GameHeader(
 fun LiveWinnerTicker() {
     val winners = remember {
         listOf(
-            "🎉 Queen Sophia just won 10,000 Coins in Lucky Roulette!",
+            "🎉 Queen Sophia just won 10,000 Coins in Dragon vs Tiger!",
             "⚡ Leo hit the 50x Mega Jackpot in Zeus Slot!",
-            "🏎️ CyberGhost took home 8,000 Coins on Luxury Car!",
+            "🐉 Tanvir Ahmed won 50,000 Coins on Dragon 2X!",
             "💎 Tariq unlocked 500 Diamonds on Treasure Chest!"
         )
     }
@@ -557,7 +705,6 @@ fun RouletteWheelSection(
                         useCenter = true
                     )
                 }
-                // Outer ring divider
                 drawCircle(
                     color = GoldPremium,
                     style = Stroke(width = 3.dp.toPx())
@@ -731,7 +878,7 @@ fun MiniGamePlayDialog(
     onDismiss: () -> Unit,
     onWin: (Long) -> Unit
 ) {
-    val reelItems = listOf("⚡", "👑", "🍒", "💎", "7️⃣", "🔔")
+    val reelItems = listOf("⚡", "👑", "🍒", "💎", "7️⃣", "🔔", "🍉")
     var reel1 by remember { mutableStateOf("⚡") }
     var reel2 by remember { mutableStateOf("⚡") }
     var reel3 by remember { mutableStateOf("⚡") }
@@ -797,7 +944,6 @@ fun MiniGamePlayDialog(
                                 reel3 = reelItems.random()
                                 delay(120)
                             }
-                            // Final result
                             reel1 = reelItems.random()
                             reel2 = reelItems.random()
                             reel3 = reelItems.random()
