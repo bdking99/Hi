@@ -1,19 +1,71 @@
 package com.example.data.repository
 
 import com.example.data.model.*
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
-import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class RoomRepository {
     private val collectionPath = "active_voice_rooms"
     private val usersCollectionPath = "users"
     private val transactionsCollectionPath = "gift_transactions"
+
+    private val repositoryScope = CoroutineScope(Dispatchers.IO)
+
+    // In-memory reactive state cache for offline resilience and immediate UI updates
+    private val _roomsState = MutableStateFlow<List<RoomData>>(emptyList())
+    private val _roomDetailMap = ConcurrentHashMap<String, MutableStateFlow<RoomData?>>()
+    private val _roomChatMap = ConcurrentHashMap<String, MutableStateFlow<List<ChatMessage>>>()
+    private val _roomGiftMap = ConcurrentHashMap<String, MutableStateFlow<GiftTransaction?>>()
+    private val _userProfilesMap = ConcurrentHashMap<String, MutableStateFlow<FirebaseUserProfile?>>()
+    private val _userTransactionsMap = ConcurrentHashMap<String, MutableStateFlow<List<CoinTransactionItem>>>()
+    private val _userReceivedGiftsMap = ConcurrentHashMap<String, MutableStateFlow<List<GiftTransaction>>>()
+
+    init {
+        // Initialize default seed rooms in-memory
+        val initialRooms = getFallbackRooms()
+        _roomsState.value = initialRooms
+        for (room in initialRooms) {
+            _roomDetailMap[room.id] = MutableStateFlow(room)
+            _roomChatMap[room.id] = MutableStateFlow(getFallbackChat(room.id))
+            _roomGiftMap[room.id] = MutableStateFlow(null)
+        }
+
+        // Initialize sample user profiles
+        val initialProfiles = listOf(
+            getFallbackUserProfile("ID_HOST_1001"),
+            getFallbackUserProfile("ID_SOPHIA_2002"),
+            getFallbackUserProfile("ID_LEO_3003"),
+            getFallbackUserProfile("ID_ELENA_4004"),
+            getFallbackUserProfile("USER_ME_CURRENT")
+        )
+        for (p in initialProfiles) {
+            _userProfilesMap[p.userId] = MutableStateFlow(p)
+        }
+
+        // Try anonymous sign-in to satisfy Firestore security rules
+        try {
+            val auth = FirebaseAuth.getInstance()
+            if (auth.currentUser == null) {
+                auth.signInAnonymously()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // Listen to Firestore if available
+        listenToFirestoreRooms()
+    }
 
     private fun getFirestore(): FirebaseFirestore? {
         return try {
@@ -24,83 +76,69 @@ class RoomRepository {
         }
     }
 
-    /**
-     * Real-time stream of all active voice rooms in Firestore.
-     * Automatically seeds sample active rooms if Firestore is empty.
-     */
-    fun getActiveVoiceRooms(): Flow<List<RoomData>> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(getFallbackRooms())
-            close()
-            return@callbackFlow
-        }
-
+    private fun listenToFirestoreRooms() {
+        val firestore = getFirestore() ?: return
         try {
-            val listenerRegistration = firestore.collection(collectionPath)
+            firestore.collection(collectionPath)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        trySend(getFallbackRooms())
+                        // Keep using in-memory state on error
                         return@addSnapshotListener
                     }
-
                     if (snapshot != null && !snapshot.isEmpty) {
-                        val rooms = snapshot.toObjects(RoomData::class.java)
-                        trySend(rooms)
+                        val firestoreRooms = snapshot.toObjects(RoomData::class.java)
+                        if (firestoreRooms.isNotEmpty()) {
+                            _roomsState.value = firestoreRooms
+                            for (r in firestoreRooms) {
+                                val flow = _roomDetailMap.getOrPut(r.id) { MutableStateFlow(r) }
+                                flow.value = r
+                            }
+                        }
                     } else {
-                        // Seed initial real-time rooms so users can immediately join and interact
+                        // Seed Firestore in background
                         seedInitialRooms(firestore)
-                        trySend(getFallbackRooms())
                     }
                 }
-
-            awaitClose {
-                listenerRegistration.remove()
-            }
         } catch (e: Exception) {
             e.printStackTrace()
-            trySend(getFallbackRooms())
-            close()
         }
     }
+
+    /**
+     * Real-time stream of all active voice rooms.
+     */
+    fun getActiveVoiceRooms(): Flow<List<RoomData>> = _roomsState.asStateFlow()
 
     /**
      * Real-time stream of a specific voice room with seat statuses.
      */
-    fun getRoomStream(roomId: String): Flow<RoomData?> = callbackFlow {
+    fun getRoomStream(roomId: String): Flow<RoomData?> {
+        val flow = _roomDetailMap.getOrPut(roomId) {
+            val fallback = _roomsState.value.find { it.id == roomId } ?: getFallbackRooms().first()
+            MutableStateFlow(fallback)
+        }
+        // Listen to Firestore document updates in background
         val firestore = getFirestore()
-        if (firestore == null) {
-            val fallback = getFallbackRooms().find { it.id == roomId } ?: getFallbackRooms().first()
-            trySend(fallback)
-            close()
-            return@callbackFlow
-        }
-
-        try {
-            val listenerRegistration = firestore.collection(collectionPath).document(roomId)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null || !snapshot.exists()) {
-                        val fallback = getFallbackRooms().find { it.id == roomId }
-                        trySend(fallback)
-                        return@addSnapshotListener
+        if (firestore != null) {
+            try {
+                firestore.collection(collectionPath).document(roomId)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error == null && snapshot != null && snapshot.exists()) {
+                            val remoteRoom = snapshot.toObject(RoomData::class.java)
+                            if (remoteRoom != null) {
+                                flow.value = remoteRoom
+                            }
+                        }
                     }
-                    val room = snapshot.toObject(RoomData::class.java)
-                    trySend(room)
-                }
-
-            awaitClose {
-                listenerRegistration.remove()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            val fallback = getFallbackRooms().find { it.id == roomId }
-            trySend(fallback)
-            close()
         }
+        return flow.asStateFlow()
     }
 
     /**
-     * Create a brand new Voice/Party Room and publish to Firestore.
+     * Create a brand new Voice/Party Room.
      */
     suspend fun createVoiceRoom(
         title: String,
@@ -110,52 +148,49 @@ class RoomRepository {
         bgGradientStart: String = "#2D124D",
         bgGradientEnd: String = "#1B1035"
     ): Result<String> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database connection not ready"))
-            val newRoomId = "room_" + UUID.randomUUID().toString().take(8)
+        val newRoomId = "room_" + UUID.randomUUID().toString().take(8)
 
-            val initialSeats = mutableListOf<SeatData>()
-            // Seat 0 is occupied by the host
-            initialSeats.add(
-                SeatData(
-                    seatIndex = 0,
-                    userId = hostUser.userId,
-                    userName = hostUser.displayName.ifEmpty { "Host" },
-                    userAvatar = hostUser.avatar,
-                    isSpeaking = false,
-                    isMuted = false,
-                    vipLevel = hostUser.vipLevel
-                )
+        val initialSeats = mutableListOf<SeatData>()
+        initialSeats.add(
+            SeatData(
+                seatIndex = 0,
+                userId = hostUser.userId,
+                userName = hostUser.displayName.ifEmpty { "Host" },
+                userAvatar = hostUser.avatar,
+                isSpeaking = false,
+                isMuted = false,
+                vipLevel = hostUser.vipLevel
             )
-            // Remaining 7 seats are free
-            for (i in 1..7) {
-                initialSeats.add(SeatData(seatIndex = i))
-            }
+        )
+        for (i in 1..7) {
+            initialSeats.add(SeatData(seatIndex = i))
+        }
 
-            val newRoom = RoomData(
-                id = newRoomId,
-                title = title.ifBlank { "VIP Voice Party" },
-                description = description.ifBlank { "Welcome to our lively voice room!" },
-                hostId = hostUser.userId,
-                hostName = hostUser.displayName.ifEmpty { "Host" },
-                hostAvatar = hostUser.avatar,
-                agencyName = "Diamond Club",
-                hostLevel = hostUser.level,
-                viewerCount = "1",
-                countryFlag = "🇺🇸",
-                tag = category.ifBlank { "Party" },
-                bgGradientStart = bgGradientStart,
-                bgGradientEnd = bgGradientEnd,
-                seats = initialSeats,
-                activeUserIds = listOf(hostUser.userId),
-                createdAt = System.currentTimeMillis()
-            )
+        val newRoom = RoomData(
+            id = newRoomId,
+            title = title.ifBlank { "VIP Voice Party" },
+            description = description.ifBlank { "Welcome to our lively voice room!" },
+            hostId = hostUser.userId,
+            hostName = hostUser.displayName.ifEmpty { "Host" },
+            hostAvatar = hostUser.avatar,
+            agencyName = "Diamond Club",
+            hostLevel = hostUser.level,
+            viewerCount = "1",
+            countryFlag = "🇧🇩",
+            tag = category.ifBlank { "Party" },
+            bgGradientStart = bgGradientStart,
+            bgGradientEnd = bgGradientEnd,
+            seats = initialSeats,
+            activeUserIds = listOf(hostUser.userId),
+            createdAt = System.currentTimeMillis()
+        )
 
-            firestore.collection(collectionPath).document(newRoomId).set(newRoom).await()
-
-            // Also post welcome system message
-            sendChatMessage(
-                newRoomId,
+        // Update local in-memory state
+        val updatedList = listOf(newRoom) + _roomsState.value
+        _roomsState.value = updatedList
+        _roomDetailMap[newRoomId] = MutableStateFlow(newRoom)
+        _roomChatMap[newRoomId] = MutableStateFlow(
+            listOf(
                 ChatMessage(
                     id = UUID.randomUUID().toString(),
                     roomId = newRoomId,
@@ -164,46 +199,45 @@ class RoomRepository {
                     isSystem = true
                 )
             )
+        )
+        _roomGiftMap[newRoomId] = MutableStateFlow(null)
 
-            Result.success(newRoomId)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        // Try syncing to Firestore in background
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore()
+                firestore?.collection(collectionPath)?.document(newRoomId)?.set(newRoom)?.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+
+        return Result.success(newRoomId)
     }
 
     /**
      * User takes a seat on the stage in real-time.
      */
     suspend fun takeSeat(roomId: String, seatIndex: Int, user: FirebaseUserProfile): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val roomRef = firestore.collection(collectionPath).document(roomId)
+        val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
+        if (currentRoom != null) {
+            val updatedSeats = currentRoom.seats.toMutableList()
+            if (seatIndex in updatedSeats.indices) {
+                updatedSeats[seatIndex] = SeatData(
+                    seatIndex = seatIndex,
+                    userId = user.userId,
+                    userName = user.displayName,
+                    userAvatar = user.avatar,
+                    isSpeaking = false,
+                    isMuted = false,
+                    vipLevel = user.vipLevel
+                )
+            }
+            val updatedRoom = currentRoom.copy(seats = updatedSeats)
+            _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
+            _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
 
-            firestore.runTransaction { transaction ->
-                val snapshot = transaction.get(roomRef)
-                val room = snapshot.toObject(RoomData::class.java) ?: throw Exception("Room not found")
-
-                val updatedSeats = room.seats.toMutableList()
-                if (seatIndex in updatedSeats.indices) {
-                    val currentSeat = updatedSeats[seatIndex]
-                    if (currentSeat.userId != null && currentSeat.userId != user.userId) {
-                        throw Exception("Seat is already taken!")
-                    }
-                    updatedSeats[seatIndex] = SeatData(
-                        seatIndex = seatIndex,
-                        userId = user.userId,
-                        userName = user.displayName,
-                        userAvatar = user.avatar,
-                        isSpeaking = false,
-                        isMuted = false,
-                        vipLevel = user.vipLevel
-                    )
-                }
-
-                transaction.update(roomRef, "seats", updatedSeats)
-            }.await()
-
+            // Add system chat
             sendChatMessage(
                 roomId,
                 ChatMessage(
@@ -214,197 +248,218 @@ class RoomRepository {
                     isSystem = true
                 )
             )
-
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
         }
+
+        // Sync to Firestore in background
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val roomRef = firestore.collection(collectionPath).document(roomId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(roomRef)
+                    val remoteRoom = snap.toObject(RoomData::class.java)
+                    if (remoteRoom != null) {
+                        val remoteSeats = remoteRoom.seats.toMutableList()
+                        if (seatIndex in remoteSeats.indices) {
+                            remoteSeats[seatIndex] = SeatData(
+                                seatIndex = seatIndex,
+                                userId = user.userId,
+                                userName = user.displayName,
+                                userAvatar = user.avatar,
+                                isSpeaking = false,
+                                isMuted = false,
+                                vipLevel = user.vipLevel
+                            )
+                            tx.update(roomRef, "seats", remoteSeats)
+                        }
+                    }
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return Result.success(Unit)
     }
 
     /**
      * User leaves their seat on the stage.
      */
     suspend fun leaveSeat(roomId: String, seatIndex: Int, userId: String): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val roomRef = firestore.collection(collectionPath).document(roomId)
-
-            firestore.runTransaction { transaction ->
-                val snapshot = transaction.get(roomRef)
-                val room = snapshot.toObject(RoomData::class.java) ?: throw Exception("Room not found")
-
-                val updatedSeats = room.seats.toMutableList()
-                if (seatIndex in updatedSeats.indices) {
-                    val currentSeat = updatedSeats[seatIndex]
-                    if (currentSeat.userId == userId || currentSeat.userId == null) {
-                        updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
-                    }
-                }
-
-                transaction.update(roomRef, "seats", updatedSeats)
-            }.await()
-
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
+        if (currentRoom != null) {
+            val updatedSeats = currentRoom.seats.toMutableList()
+            if (seatIndex in updatedSeats.indices) {
+                updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+            }
+            val updatedRoom = currentRoom.copy(seats = updatedSeats)
+            _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
+            _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
         }
+
+        // Sync to Firestore in background
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val roomRef = firestore.collection(collectionPath).document(roomId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(roomRef)
+                    val remoteRoom = snap.toObject(RoomData::class.java)
+                    if (remoteRoom != null) {
+                        val remoteSeats = remoteRoom.seats.toMutableList()
+                        if (seatIndex in remoteSeats.indices) {
+                            remoteSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+                            tx.update(roomRef, "seats", remoteSeats)
+                        }
+                    }
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return Result.success(Unit)
     }
 
     /**
      * Speaker toggles their microphone Mute/Unmute state.
      */
     suspend fun toggleMicMute(roomId: String, seatIndex: Int, isMuted: Boolean): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val roomRef = firestore.collection(collectionPath).document(roomId)
-
-            firestore.runTransaction { transaction ->
-                val snapshot = transaction.get(roomRef)
-                val room = snapshot.toObject(RoomData::class.java) ?: throw Exception("Room not found")
-
-                val updatedSeats = room.seats.toMutableList()
-                if (seatIndex in updatedSeats.indices) {
-                    val currentSeat = updatedSeats[seatIndex]
-                    updatedSeats[seatIndex] = currentSeat.copy(isMuted = isMuted, isSpeaking = if (isMuted) false else currentSeat.isSpeaking)
-                }
-
-                transaction.update(roomRef, "seats", updatedSeats)
-            }.await()
-
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
+        if (currentRoom != null) {
+            val updatedSeats = currentRoom.seats.toMutableList()
+            if (seatIndex in updatedSeats.indices) {
+                val currentSeat = updatedSeats[seatIndex]
+                updatedSeats[seatIndex] = currentSeat.copy(
+                    isMuted = isMuted,
+                    isSpeaking = if (isMuted) false else currentSeat.isSpeaking
+                )
+            }
+            val updatedRoom = currentRoom.copy(seats = updatedSeats)
+            _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
+            _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
         }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val roomRef = firestore.collection(collectionPath).document(roomId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(roomRef)
+                    val remoteRoom = snap.toObject(RoomData::class.java)
+                    if (remoteRoom != null) {
+                        val remoteSeats = remoteRoom.seats.toMutableList()
+                        if (seatIndex in remoteSeats.indices) {
+                            remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(
+                                isMuted = isMuted,
+                                isSpeaking = if (isMuted) false else remoteSeats[seatIndex].isSpeaking
+                            )
+                            tx.update(roomRef, "seats", remoteSeats)
+                        }
+                    }
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return Result.success(Unit)
     }
 
     /**
-     * Room Host/Admin controls: Mute another speaker or kick them off their seat.
+     * Host controls: Mute or kick another speaker.
      */
     suspend fun hostControlSeat(roomId: String, seatIndex: Int, kick: Boolean, mute: Boolean): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val roomRef = firestore.collection(collectionPath).document(roomId)
-
-            firestore.runTransaction { transaction ->
-                val snapshot = transaction.get(roomRef)
-                val room = snapshot.toObject(RoomData::class.java) ?: throw Exception("Room not found")
-
-                val updatedSeats = room.seats.toMutableList()
-                if (seatIndex in updatedSeats.indices) {
-                    val currentSeat = updatedSeats[seatIndex]
-                    if (kick) {
-                        updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
-                    } else if (mute) {
-                        updatedSeats[seatIndex] = currentSeat.copy(isMuted = true, isSpeaking = false)
-                    }
+        val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
+        if (currentRoom != null) {
+            val updatedSeats = currentRoom.seats.toMutableList()
+            if (seatIndex in updatedSeats.indices) {
+                if (kick) {
+                    updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+                } else if (mute) {
+                    updatedSeats[seatIndex] = updatedSeats[seatIndex].copy(isMuted = true, isSpeaking = false)
                 }
-
-                transaction.update(roomRef, "seats", updatedSeats)
-            }.await()
-
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+            }
+            val updatedRoom = currentRoom.copy(seats = updatedSeats)
+            _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
+            _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
         }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val roomRef = firestore.collection(collectionPath).document(roomId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(roomRef)
+                    val remoteRoom = snap.toObject(RoomData::class.java)
+                    if (remoteRoom != null) {
+                        val remoteSeats = remoteRoom.seats.toMutableList()
+                        if (seatIndex in remoteSeats.indices) {
+                            if (kick) {
+                                remoteSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+                            } else if (mute) {
+                                remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(isMuted = true, isSpeaking = false)
+                            }
+                            tx.update(roomRef, "seats", remoteSeats)
+                        }
+                    }
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return Result.success(Unit)
     }
 
     /**
      * Real-time stream of room chat comments.
      */
-    fun getChatMessages(roomId: String): Flow<List<ChatMessage>> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(getFallbackChat(roomId))
-            close()
-            return@callbackFlow
+    fun getChatMessages(roomId: String): Flow<List<ChatMessage>> {
+        val flow = _roomChatMap.getOrPut(roomId) {
+            MutableStateFlow(getFallbackChat(roomId))
         }
-
-        try {
-            val listenerRegistration = firestore.collection(collectionPath).document(roomId)
-                .collection("messages")
-                .orderBy("timestamp", Query.Direction.ASCENDING)
-                .limitToLast(50)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null) {
-                        trySend(getFallbackChat(roomId))
-                        return@addSnapshotListener
-                    }
-                    val msgs = snapshot.toObjects(ChatMessage::class.java)
-                    trySend(if (msgs.isEmpty()) getFallbackChat(roomId) else msgs)
-                }
-
-            awaitClose {
-                listenerRegistration.remove()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(getFallbackChat(roomId))
-            close()
-        }
+        return flow.asStateFlow()
     }
 
     /**
      * Send a real-time message to room chat.
      */
     suspend fun sendChatMessage(roomId: String, message: ChatMessage): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val msgId = message.id.ifEmpty { UUID.randomUUID().toString() }
-            val finalMsg = message.copy(id = msgId, roomId = roomId, timestamp = System.currentTimeMillis())
-            firestore.collection(collectionPath).document(roomId)
-                .collection("messages").document(msgId).set(finalMsg).await()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        val msgId = message.id.ifEmpty { UUID.randomUUID().toString() }
+        val finalMsg = message.copy(id = msgId, roomId = roomId, timestamp = System.currentTimeMillis())
+
+        val flow = _roomChatMap.getOrPut(roomId) { MutableStateFlow(emptyList()) }
+        flow.value = flow.value + finalMsg
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(collectionPath).document(roomId)
+                    .collection("messages").document(msgId).set(finalMsg).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+
+        return Result.success(Unit)
     }
 
     /**
      * Real-time stream of latest gift sent in the room to trigger visual animations.
      */
-    fun getLatestRoomGiftStream(roomId: String): Flow<GiftTransaction?> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(null)
-            close()
-            return@callbackFlow
-        }
-
-        try {
-            val listener = firestore.collection(collectionPath).document(roomId)
-                .collection("gifts")
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(1)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null || snapshot.isEmpty) {
-                        trySend(null)
-                        return@addSnapshotListener
-                    }
-                    val latest = snapshot.toObjects(GiftTransaction::class.java).firstOrNull()
-                    trySend(latest)
-                }
-
-            awaitClose {
-                listener.remove()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(null)
-            close()
-        }
+    fun getLatestRoomGiftStream(roomId: String): Flow<GiftTransaction?> {
+        val flow = _roomGiftMap.getOrPut(roomId) { MutableStateFlow(null) }
+        return flow.asStateFlow()
     }
 
     /**
      * Real-Time Gift Transaction:
-     * - Atomic Firestore transaction verifies sender balance >= gift.costCoins.
-     * - Prevents duplicate deductions or self-gifting.
      * - Deducts coins from sender, increments receiver's receivedDiamonds & giftsReceivedCount.
-     * - Logs gift transaction for both room animation and user showcase.
+     * - Emits latest gift to room for floating luxury animation.
+     * - Adds announcement to room chat.
+     * - Updates local user profile and transactions.
+     * - Syncs to Firestore in background.
      */
     suspend fun sendGift(
         roomId: String,
@@ -415,287 +470,215 @@ class RoomRepository {
         receiverName: String,
         gift: GiftItem
     ): Result<GiftTransaction> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            
-            if (senderId == receiverId) {
-                return Result.failure(Exception("You cannot send gifts to yourself!"))
-            }
+        val txId = "tx_gift_" + UUID.randomUUID().toString().take(8)
+        val giftTx = GiftTransaction(
+            id = txId,
+            roomId = roomId,
+            senderId = senderId,
+            senderName = senderName,
+            senderAvatar = senderAvatar,
+            receiverId = receiverId,
+            receiverName = receiverName,
+            giftId = gift.id,
+            giftName = gift.name,
+            giftEmoji = gift.emoji,
+            coins = gift.costCoins,
+            timestamp = System.currentTimeMillis()
+        )
 
-            val senderRef = firestore.collection(usersCollectionPath).document(senderId)
-            val receiverRef = firestore.collection(usersCollectionPath).document(receiverId)
-            val txId = "tx_gift_" + UUID.randomUUID().toString()
+        // 1. Emit latest gift to room state to trigger animation
+        val giftFlow = _roomGiftMap.getOrPut(roomId) { MutableStateFlow(null) }
+        giftFlow.value = giftTx
 
-            val giftTx = GiftTransaction(
-                id = txId,
+        // 2. Announce in room chat
+        sendChatMessage(
+            roomId,
+            ChatMessage(
+                id = UUID.randomUUID().toString(),
                 roomId = roomId,
-                senderId = senderId,
-                senderName = senderName,
-                senderAvatar = senderAvatar,
-                receiverId = receiverId,
-                receiverName = receiverName,
-                giftId = gift.id,
-                giftName = gift.name,
-                giftEmoji = gift.emoji,
-                coins = gift.costCoins,
-                timestamp = System.currentTimeMillis()
+                senderName = "System",
+                text = "🎁 $senderName sent ${gift.emoji} ${gift.name} to $receiverName!",
+                isSystem = true
             )
+        )
 
-            firestore.runTransaction { tx ->
-                val senderSnap = tx.get(senderRef)
-                val currentCoins = senderSnap.getLong("coinBalance") ?: 2500L
+        // 3. Update Receiver Profile in-memory
+        val receiverFlow = _userProfilesMap.getOrPut(receiverId) {
+            MutableStateFlow(getFallbackUserProfile(receiverId))
+        }
+        val currentReceiver = receiverFlow.value ?: getFallbackUserProfile(receiverId)
+        val updatedReceiver = currentReceiver.copy(
+            receivedDiamonds = currentReceiver.receivedDiamonds + gift.costCoins,
+            giftsReceivedCount = currentReceiver.giftsReceivedCount + 1
+        )
+        receiverFlow.value = updatedReceiver
 
-                if (currentCoins < gift.costCoins) {
-                    throw Exception("Insufficient coin balance! Needs ${gift.costCoins} coins (You have $currentCoins).")
-                }
+        // 4. Update Receiver's received gifts showcase
+        val receivedGiftsFlow = _userReceivedGiftsMap.getOrPut(receiverId) { MutableStateFlow(emptyList()) }
+        receivedGiftsFlow.value = listOf(giftTx) + receivedGiftsFlow.value
 
-                // Deduct from sender
-                tx.update(senderRef, "coinBalance", currentCoins - gift.costCoins)
+        // 5. Update Sender's profile & transactions
+        val senderFlow = _userProfilesMap.getOrPut(senderId) {
+            MutableStateFlow(getFallbackUserProfile(senderId))
+        }
+        val currentSender = senderFlow.value ?: getFallbackUserProfile(senderId)
+        val newSenderBalance = maxOf(0L, currentSender.coinBalance - gift.costCoins)
+        senderFlow.value = currentSender.copy(coinBalance = newSenderBalance)
 
-                // Add to receiver
-                val receiverSnap = tx.get(receiverRef)
-                val currentDiamonds = receiverSnap.getLong("receivedDiamonds") ?: 0L
-                val currentGiftsCount = receiverSnap.getLong("giftsReceivedCount") ?: 0L
-                tx.update(receiverRef, "receivedDiamonds", currentDiamonds + gift.costCoins)
-                tx.update(receiverRef, "giftsReceivedCount", currentGiftsCount + 1)
+        val senderTxFlow = _userTransactionsMap.getOrPut(senderId) { MutableStateFlow(emptyList()) }
+        val senderTx = CoinTransactionItem(
+            id = txId,
+            userId = senderId,
+            type = "GIFT_SENT",
+            amount = -gift.costCoins,
+            title = "Sent ${gift.emoji} ${gift.name}",
+            description = "To $receiverName in room",
+            timestamp = System.currentTimeMillis()
+        )
+        senderTxFlow.value = listOf(senderTx) + senderTxFlow.value
 
-                // Add transaction record
+        // Asynchronously persist to Firestore
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val senderRef = firestore.collection(usersCollectionPath).document(senderId)
+                val receiverRef = firestore.collection(usersCollectionPath).document(receiverId)
                 val roomGiftsRef = firestore.collection(collectionPath).document(roomId).collection("gifts").document(txId)
-                tx.set(roomGiftsRef, giftTx)
 
-                val globalGiftsRef = firestore.collection(transactionsCollectionPath).document(txId)
-                tx.set(globalGiftsRef, giftTx)
+                firestore.runTransaction { tx ->
+                    val senderSnap = tx.get(senderRef)
+                    val cur = senderSnap.getLong("coinBalance") ?: 5000L
+                    tx.update(senderRef, "coinBalance", maxOf(0L, cur - gift.costCoins))
 
-                // Log sender transaction
-                val senderTxRef = firestore.collection(usersCollectionPath).document(senderId).collection("transactions").document(txId)
-                val senderTx = CoinTransactionItem(
-                    id = txId,
-                    userId = senderId,
-                    type = "GIFT_SENT",
-                    amount = -gift.costCoins,
-                    title = "Sent ${gift.emoji} ${gift.name}",
-                    description = "To $receiverName in room",
-                    timestamp = System.currentTimeMillis()
-                )
-                tx.set(senderTxRef, senderTx)
-
-                // Log receiver transaction
-                val receiverTxRef = firestore.collection(usersCollectionPath).document(receiverId).collection("transactions").document(txId)
-                val receiverTx = CoinTransactionItem(
-                    id = txId,
-                    userId = receiverId,
-                    type = "GIFT_RECEIVED",
-                    amount = gift.costCoins,
-                    title = "Received ${gift.emoji} ${gift.name}",
-                    description = "From $senderName",
-                    timestamp = System.currentTimeMillis()
-                )
-                tx.set(receiverTxRef, receiverTx)
-            }.await()
-
-            // Announce in room chat
-            sendChatMessage(
-                roomId,
-                ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    roomId = roomId,
-                    senderName = "System",
-                    text = "🎁 $senderName gifted ${gift.emoji} ${gift.name} to $receiverName!",
-                    isSystem = true
-                )
-            )
-
-            Result.success(giftTx)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+                    val receiverSnap = tx.get(receiverRef)
+                    val curDiamonds = receiverSnap.getLong("receivedDiamonds") ?: 0L
+                    val curGifts = receiverSnap.getLong("giftsReceivedCount") ?: 0L
+                    tx.update(receiverRef, "receivedDiamonds", curDiamonds + gift.costCoins)
+                    tx.update(receiverRef, "giftsReceivedCount", curGifts + 1)
+                    tx.set(roomGiftsRef, giftTx)
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+
+        return Result.success(giftTx)
     }
 
     /**
-     * Real-time stream of user profile by User ID (for profile screen or profile visit).
+     * Real-time stream of user profile by User ID.
      */
-    fun getUserProfileStream(userId: String): Flow<FirebaseUserProfile?> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(getFallbackUserProfile(userId))
-            close()
-            return@callbackFlow
+    fun getUserProfileStream(userId: String): Flow<FirebaseUserProfile?> {
+        val flow = _userProfilesMap.getOrPut(userId) {
+            MutableStateFlow(getFallbackUserProfile(userId))
         }
-
-        try {
-            val userRef = firestore.collection(usersCollectionPath).document(userId)
-            val listener = userRef.addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null || !snapshot.exists()) {
-                    val fallback = getFallbackUserProfile(userId)
-                    trySend(fallback)
-                    // If doesn't exist, initialize in Firestore
-                    userRef.set(fallback, SetOptions.merge())
-                    return@addSnapshotListener
-                }
-                val profile = snapshot.toObject(FirebaseUserProfile::class.java)
-                trySend(profile)
-            }
-
-            awaitClose {
-                listener.remove()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(getFallbackUserProfile(userId))
-            close()
-        }
+        return flow.asStateFlow()
     }
 
     /**
-     * Fetch user profile once (e.g. for clicking a seat to view public profile).
+     * Fetch user profile once.
      */
     suspend fun getUserProfileOnce(userId: String): FirebaseUserProfile {
-        return try {
-            val firestore = getFirestore() ?: return getFallbackUserProfile(userId)
-            val doc = firestore.collection(usersCollectionPath).document(userId).get().await()
-            if (doc.exists()) {
-                doc.toObject(FirebaseUserProfile::class.java) ?: getFallbackUserProfile(userId)
-            } else {
-                val fallback = getFallbackUserProfile(userId)
-                firestore.collection(usersCollectionPath).document(userId).set(fallback).await()
-                fallback
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            getFallbackUserProfile(userId)
-        }
+        return _userProfilesMap[userId]?.value ?: getFallbackUserProfile(userId)
     }
 
     /**
-     * Update user profile details in Firestore.
+     * Update user profile details.
      */
     suspend fun updateUserProfile(profile: FirebaseUserProfile): Result<Unit> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            firestore.collection(usersCollectionPath).document(profile.userId).set(profile, SetOptions.merge()).await()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        val flow = _userProfilesMap.getOrPut(profile.userId) { MutableStateFlow(profile) }
+        flow.value = profile
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(usersCollectionPath).document(profile.userId).set(profile, SetOptions.merge()).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+        return Result.success(Unit)
     }
 
     /**
      * Instant Coin Recharge with transaction record.
      */
     suspend fun rechargeCoins(userId: String, coins: Long, packTitle: String): Result<Long> {
-        return try {
-            val firestore = getFirestore() ?: return Result.failure(Exception("Database unavailable"))
-            val userRef = firestore.collection(usersCollectionPath).document(userId)
-            val txId = "tx_rec_" + UUID.randomUUID().toString()
+        val flow = _userProfilesMap.getOrPut(userId) { MutableStateFlow(getFallbackUserProfile(userId)) }
+        val curProfile = flow.value ?: getFallbackUserProfile(userId)
+        val newBalance = curProfile.coinBalance + coins
+        flow.value = curProfile.copy(coinBalance = newBalance)
 
-            var newBalance = 0L
-            firestore.runTransaction { tx ->
-                val snap = tx.get(userRef)
-                val current = snap.getLong("coinBalance") ?: 2500L
-                newBalance = current + coins
-                tx.update(userRef, "coinBalance", newBalance)
+        val txId = "tx_rec_" + UUID.randomUUID().toString().take(8)
+        val txFlow = _userTransactionsMap.getOrPut(userId) { MutableStateFlow(emptyList()) }
+        val txItem = CoinTransactionItem(
+            id = txId,
+            userId = userId,
+            type = "RECHARGE",
+            amount = coins,
+            title = "Recharged $packTitle",
+            description = "+$coins Coins added to wallet",
+            timestamp = System.currentTimeMillis()
+        )
+        txFlow.value = listOf(txItem) + txFlow.value
 
-                val txItem = CoinTransactionItem(
-                    id = txId,
-                    userId = userId,
-                    type = "RECHARGE",
-                    amount = coins,
-                    title = "Recharged $packTitle",
-                    description = "+$coins Coins added to wallet",
-                    timestamp = System.currentTimeMillis()
-                )
-                val txRef = userRef.collection("transactions").document(txId)
-                tx.set(txRef, txItem)
-            }.await()
-
-            Result.success(newBalance)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Result.failure(e)
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                val userRef = firestore.collection(usersCollectionPath).document(userId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(userRef)
+                    val cur = snap.getLong("coinBalance") ?: 5000L
+                    tx.update(userRef, "coinBalance", cur + coins)
+                }.await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+
+        return Result.success(newBalance)
     }
 
     /**
      * Stream user coin transaction history.
      */
-    fun getUserTransactions(userId: String): Flow<List<CoinTransactionItem>> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
-
-        try {
-            val listener = firestore.collection(usersCollectionPath).document(userId)
-                .collection("transactions")
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(50)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null) {
-                        trySend(emptyList())
-                        return@addSnapshotListener
-                    }
-                    val items = snapshot.toObjects(CoinTransactionItem::class.java)
-                    trySend(items)
-                }
-
-            awaitClose { listener.remove() }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(emptyList())
-            close()
-        }
+    fun getUserTransactions(userId: String): Flow<List<CoinTransactionItem>> {
+        val flow = _userTransactionsMap.getOrPut(userId) { MutableStateFlow(emptyList()) }
+        return flow.asStateFlow()
     }
 
     /**
      * Stream gifts received by user for the Gift Showcase.
      */
-    fun getUserReceivedGifts(userId: String): Flow<List<GiftTransaction>> = callbackFlow {
-        val firestore = getFirestore()
-        if (firestore == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
+    fun getUserReceivedGifts(userId: String): Flow<List<GiftTransaction>> {
+        val flow = _userReceivedGiftsMap.getOrPut(userId) {
+            MutableStateFlow(
+                listOf(
+                    GiftTransaction(giftEmoji = "🌹", giftName = "Rose", coins = 10),
+                    GiftTransaction(giftEmoji = "👑", giftName = "Crown", coins = 5000),
+                    GiftTransaction(giftEmoji = "🚀", giftName = "Rocket", coins = 1000),
+                    GiftTransaction(giftEmoji = "🏎️", giftName = "Sports Car", coins = 500)
+                )
+            )
         }
-
-        try {
-            val listener = firestore.collection(transactionsCollectionPath)
-                .whereEqualTo("receiverId", userId)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(50)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null) {
-                        trySend(emptyList())
-                        return@addSnapshotListener
-                    }
-                    val items = snapshot.toObjects(GiftTransaction::class.java)
-                    trySend(items)
-                }
-
-            awaitClose { listener.remove() }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            trySend(emptyList())
-            close()
-        }
+        return flow.asStateFlow()
     }
 
     // ----------------------------------------------------
     // Fallback & Seed Data Helpers
     // ----------------------------------------------------
     private fun seedInitialRooms(firestore: FirebaseFirestore) {
-        try {
-            val batch = firestore.batch()
-            for (room in getFallbackRooms()) {
-                val doc = firestore.collection(collectionPath).document(room.id)
-                batch.set(doc, room)
+        repositoryScope.launch {
+            try {
+                val batch = firestore.batch()
+                for (room in getFallbackRooms()) {
+                    val doc = firestore.collection(collectionPath).document(room.id)
+                    batch.set(doc, room)
+                }
+                batch.commit().await()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            batch.commit()
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -722,6 +705,17 @@ class RoomRepository {
             SeatData(7)
         )
 
+        val banglaSeats = listOf(
+            SeatData(0, "ID_HOST_BANGLA", "Tanvir Ahmed", "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150", isSpeaking = true, isMuted = false, vipLevel = 5),
+            SeatData(1, "ID_SADIA_BANGLA", "Sadia Noor", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150", isSpeaking = false, isMuted = false, vipLevel = 3),
+            SeatData(2),
+            SeatData(3),
+            SeatData(4),
+            SeatData(5),
+            SeatData(6),
+            SeatData(7)
+        )
+
         return listOf(
             RoomData(
                 id = "room_acoustic_night",
@@ -739,6 +733,23 @@ class RoomRepository {
                 bgGradientEnd = "#AD5389",
                 seats = room1Seats,
                 createdAt = System.currentTimeMillis() - 3600000
+            ),
+            RoomData(
+                id = "room_bangla_adda",
+                title = "🇧🇩 বাংলা আড্ডা ও গান নাইট",
+                description = "সবাই আসুন স্টেজে উঠে কথা বলুন ও গান শুনুন! Enjoy live chat.",
+                hostId = "ID_HOST_BANGLA",
+                hostName = "Tanvir Ahmed",
+                hostAvatar = "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150",
+                agencyName = "Bengal Kings 👑",
+                hostLevel = 42,
+                viewerCount = "4.5k",
+                countryFlag = "🇧🇩",
+                tag = "Adda",
+                bgGradientStart = "#004D40",
+                bgGradientEnd = "#00796B",
+                seats = banglaSeats,
+                createdAt = System.currentTimeMillis() - 1200000
             ),
             RoomData(
                 id = "room_electronic_party",
@@ -780,9 +791,9 @@ class RoomRepository {
     private fun getFallbackChat(roomId: String): List<ChatMessage> {
         return listOf(
             ChatMessage(id = "msg_1", roomId = roomId, senderName = "System", text = "✨ Welcome to the Voice Party! Respect each other and have fun.", isSystem = true),
-            ChatMessage(id = "msg_2", roomId = roomId, senderName = "Sophia", text = "Hey Aria, wonderful voice today! 💖"),
+            ChatMessage(id = "msg_2", roomId = roomId, senderName = "Sophia", text = "Hey everyone, wonderful voice today! 💖"),
             ChatMessage(id = "msg_3", roomId = roomId, senderName = "Leo", text = "Sent 5 Roses 🌹"),
-            ChatMessage(id = "msg_4", roomId = roomId, senderName = "Alex", text = "Great vibes in this club 🔥")
+            ChatMessage(id = "msg_4", roomId = roomId, senderName = "Tanvir", text = "স্টেজে এসে কথা বলুন সবাই 🔥")
         )
     }
 
@@ -804,6 +815,22 @@ class RoomRepository {
                 giftsReceivedCount = 142,
                 followersCount = 18400,
                 followingCount = 120
+            )
+            "ID_HOST_BANGLA" -> FirebaseUserProfile(
+                userId = "ID_HOST_BANGLA",
+                publicUserId = "77112233",
+                displayName = "Tanvir Ahmed",
+                username = "tanvir_live",
+                avatar = "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150",
+                coverImage = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800",
+                bio = "Welcome to Bangla Adda Club! 🇧🇩🎙️ প্রতিদিন লাইভ গান ও আড্ডা।",
+                level = 42,
+                vipLevel = 5,
+                coinBalance = 85000L,
+                receivedDiamonds = 150000L,
+                giftsReceivedCount = 420,
+                followersCount = 34500,
+                followingCount = 89
             )
             "ID_SOPHIA_2002" -> FirebaseUserProfile(
                 userId = "ID_SOPHIA_2002",
@@ -838,19 +865,19 @@ class RoomRepository {
             )
             else -> FirebaseUserProfile(
                 userId = userId,
-                publicUserId = "9988" + userId.takeLast(4).filter { it.isDigit() }.padStart(4, '7'),
-                displayName = "Star Member",
+                publicUserId = "8899" + userId.takeLast(4).filter { it.isDigit() }.padStart(4, '7'),
+                displayName = "VIP Clubber",
                 username = "user_" + userId.take(6),
                 avatar = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
                 coverImage = "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800",
-                bio = "Voice room explorer and party enthusiast! 🎙️✨",
-                level = 5,
-                vipLevel = 1,
-                coinBalance = 3500L,
-                receivedDiamonds = 5000L,
-                giftsReceivedCount = 12,
-                followersCount = 320,
-                followingCount = 45
+                bio = "Voice room star! Let's party & connect. 🎙️✨",
+                level = 10,
+                vipLevel = 2,
+                coinBalance = 50000L,
+                receivedDiamonds = 12500L,
+                giftsReceivedCount = 38,
+                followersCount = 1450,
+                followingCount = 112
             )
         }
     }

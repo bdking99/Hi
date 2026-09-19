@@ -1212,6 +1212,14 @@ fun LiveVoiceRoomBottomSheet(
         }
     }
 
+    // Auto dismiss UI notices
+    LaunchedEffect(uiNotice) {
+        if (uiNotice != null) {
+            kotlinx.coroutines.delay(3500)
+            viewModel?.clearNotice()
+        }
+    }
+
     // Determine seat states (Firestore or mapped fallback)
     val seats = remember(currentRoomData) {
         if (currentRoomData != null && currentRoomData!!.seats.isNotEmpty()) {

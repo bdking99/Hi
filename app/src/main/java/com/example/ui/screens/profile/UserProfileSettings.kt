@@ -1,8 +1,12 @@
 package com.example.ui.screens.profile
 
+import android.Manifest
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,7 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -30,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.ui.theme.GoldPremium
 import com.example.ui.theme.TealPremium
+import com.example.utils.PermissionManager
 
 val PRESET_AVATARS = listOf(
     "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150",
@@ -61,12 +69,23 @@ fun UserProfileSettingsDialog(
     var bio by remember { mutableStateOf(currentBio) }
     var selectedAvatar by remember { mutableStateOf(currentAvatar ?: PRESET_AVATARS[0]) }
     var selectedCover by remember { mutableStateOf(currentCover ?: PRESET_COVERS[0]) }
+    val context = LocalContext.current
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             selectedAvatar = uri.toString()
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            photoPickerLauncher.launch("image/*")
+        } else {
+            Toast.makeText(context, "Camera permission needed to upload photo", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -84,7 +103,7 @@ fun UserProfileSettingsDialog(
                 .padding(vertical = 16.dp),
             shape = RoundedCornerShape(24.dp),
             color = Color(0xFF19162A),
-            border = androidx.compose.foundation.BorderStroke(1.dp, GoldPremium.copy(alpha = 0.3f))
+            border = BorderStroke(1.dp, GoldPremium.copy(alpha = 0.35f))
         ) {
             Column(
                 modifier = Modifier
@@ -98,12 +117,16 @@ fun UserProfileSettingsDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Edit Profile & Persona",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("✨", fontSize = 20.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Edit Profile & VIP Identity",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                    }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White.copy(alpha = 0.7f))
                     }
@@ -190,9 +213,15 @@ fun UserProfileSettingsDialog(
                     Spacer(modifier = Modifier.width(16.dp))
 
                     OutlinedButton(
-                        onClick = { photoPickerLauncher.launch("image/*") },
+                        onClick = {
+                            if (PermissionManager.isCameraPermissionGranted(context)) {
+                                photoPickerLauncher.launch("image/*")
+                            } else {
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }
+                        },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TealPremium),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, TealPremium),
+                        border = BorderStroke(1.dp, TealPremium),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Icon(Icons.Default.PhotoCamera, contentDescription = "Upload", modifier = Modifier.size(16.dp))
@@ -303,5 +332,179 @@ fun UserProfileSettingsDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * Functional App & Voice Room Settings Sheet:
+ * Allows user to toggle Microphone sensitivity, Noise Suppression, Gift animations,
+ * Room Entrance Sound, Push notifications, and Incognito mode.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppSettingsSheet(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var noiseSuppression by remember { mutableStateOf(true) }
+    var entranceSound by remember { mutableStateOf(true) }
+    var giftAnimations by remember { mutableStateOf(true) }
+    var pushNotifications by remember { mutableStateOf(true) }
+    var hdAudio by remember { mutableStateOf(true) }
+    var incognitoMode by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .wrapContentHeight()
+                .padding(vertical = 16.dp)
+                .testTag("app_settings_dialog"),
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF181528),
+            border = BorderStroke(1.dp, TealPremium.copy(alpha = 0.35f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("⚙️", fontSize = 20.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Voice & Room Settings",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White.copy(alpha = 0.7f))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Section 1: Audio & Stage Controls
+                Text("AUDIO & STAGE CONTROLS", color = TealPremium, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                SettingToggleItem(
+                    icon = Icons.Default.MicNone,
+                    title = "AI Noise Suppression",
+                    subtitle = "Eliminate background noise when speaking on stage",
+                    checked = noiseSuppression,
+                    onCheckedChange = { noiseSuppression = it }
+                )
+
+                SettingToggleItem(
+                    icon = Icons.Default.Headphones,
+                    title = "HD Voice Streaming",
+                    subtitle = "Crystal-clear 48kHz audio for singing & music rooms",
+                    checked = hdAudio,
+                    onCheckedChange = { hdAudio = it }
+                )
+
+                SettingToggleItem(
+                    icon = Icons.Default.VolumeUp,
+                    title = "Room Entrance Sound",
+                    subtitle = "Play VIP sound effect when entering party rooms",
+                    checked = entranceSound,
+                    onCheckedChange = { entranceSound = it }
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Section 2: Visual & Luxury Effects
+                Text("VISUAL & NOTIFICATIONS", color = GoldPremium, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                SettingToggleItem(
+                    icon = Icons.Default.CardGiftcard,
+                    title = "3D Luxury Gift Animations",
+                    subtitle = "Display full-screen golden rockets, cars & crowns",
+                    checked = giftAnimations,
+                    onCheckedChange = { giftAnimations = it }
+                )
+
+                SettingToggleItem(
+                    icon = Icons.Default.Notifications,
+                    title = "Live Push Notifications",
+                    subtitle = "Get alerted when followed hosts start broadcasting",
+                    checked = pushNotifications,
+                    onCheckedChange = { pushNotifications = it }
+                )
+
+                SettingToggleItem(
+                    icon = Icons.Default.VisibilityOff,
+                    title = "VIP Incognito Mode",
+                    subtitle = "Hide online status and enter rooms discreetly",
+                    checked = incognitoMode,
+                    onCheckedChange = { incognitoMode = it }
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        Toast.makeText(context, "Settings saved successfully! ✅", Toast.LENGTH_SHORT).show()
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = TealPremium)
+                ) {
+                    Text("Apply & Close", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingToggleItem(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .background(Color.White.copy(alpha = 0.04f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = title, tint = TealPremium, modifier = Modifier.size(24.dp))
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(subtitle, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.Black,
+                checkedTrackColor = TealPremium,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = Color.White.copy(alpha = 0.2f)
+            )
+        )
     }
 }

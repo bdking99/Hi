@@ -50,7 +50,14 @@ fun ProfileScreen(
     var activeDialogContent by remember { mutableStateOf<String?>(null) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    if (showSettingsSheet) {
+        AppSettingsSheet(
+            onDismiss = { showSettingsSheet = false }
+        )
+    }
 
     if (showEditProfileDialog) {
         UserProfileSettingsDialog(
@@ -87,8 +94,7 @@ fun ProfileScreen(
             fansCount = profile?.followersCount ?: 1420,
             charmValue = (profile?.earnings ?: 4820L) * 4,
             onSettingsClick = {
-                activeDialogTitle = "⚙️ Account Settings"
-                activeDialogContent = "Manage bound phone number, privacy visibility, and sound effects."
+                showSettingsSheet = true
             },
             onEditClick = {
                 showEditProfileDialog = true
@@ -140,6 +146,7 @@ fun ProfileScreen(
                 activeDialogTitle = title
                 activeDialogContent = desc
             },
+            onOpenSettings = { showSettingsSheet = true },
             onLogoutPrompt = { showLogoutConfirm = true }
         )
     }
@@ -372,28 +379,29 @@ fun ProfileHeaderSection(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // UID Pill with copy action
+                    // Luxury Golden UID Badge with copy action
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF221A38),
+                        border = BorderStroke(1.dp, Brush.horizontalGradient(listOf(GoldPremium, TealPremium))),
                         modifier = Modifier.clickable {
                             clipboardManager.setText(AnnotatedString(uid))
-                            Toast.makeText(context, "UID $uid copied!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "👑 VIP UID $uid copied to clipboard!", Toast.LENGTH_SHORT).show()
                         }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("UID: $uid", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(12.dp), tint = TealPremium)
+                            Text("👑 ID: $uid", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GoldPremium)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy UID", modifier = Modifier.size(13.dp), tint = TealPremium)
                         }
                     }
 
                     // Gender Badge (♂ Male 24)
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = Color(0xFF2979FF).copy(alpha = 0.2f),
                         border = BorderStroke(1.dp, Color(0xFF2979FF).copy(alpha = 0.5f))
                     ) {
@@ -402,13 +410,13 @@ fun ProfileHeaderSection(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF2979FF),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
 
                     // Host Level Badge (Lv.18)
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = GoldPremium.copy(alpha = 0.25f),
                         border = BorderStroke(1.dp, GoldPremium)
                     ) {
@@ -417,7 +425,7 @@ fun ProfileHeaderSection(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = GoldPremium,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }
@@ -670,6 +678,7 @@ fun ActionListSection(
     showAgency: Boolean,
     agencyName: String,
     onActionClick: (String, String) -> Unit,
+    onOpenSettings: () -> Unit,
     onLogoutPrompt: () -> Unit
 ) {
     Card(
@@ -735,6 +744,11 @@ fun ActionListSection(
         colors = CardDefaults.cardColors(containerColor = DarkSurfaceMenu)
     ) {
         Column {
+            ActionListItem(
+                title = "Voice & Room Settings",
+                icon = Icons.Outlined.Settings,
+                onClick = onOpenSettings
+            )
             ActionListItem(
                 title = "Feedback & Help Center",
                 icon = Icons.Outlined.HelpOutline,
