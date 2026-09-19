@@ -454,7 +454,18 @@ fun AppSettingsSheet(
                     onCheckedChange = { incognitoMode = it }
                 )
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("App Version", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                    Text("v1.0.1 (Build 3)", color = GoldPremium, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Button(
                     onClick = {

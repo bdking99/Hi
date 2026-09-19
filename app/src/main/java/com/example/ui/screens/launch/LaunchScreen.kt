@@ -254,14 +254,25 @@ fun LaunchScreen(
             )
         }
 
-        // Bottom Powered By Tag
-        Text(
-            text = "Powered by Realtime Audio & Cloud Firestore",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = 0.4f),
+        // Bottom Powered By Tag & Version
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 24.dp)
-        )
+                .padding(bottom = 20.dp)
+        ) {
+            Text(
+                text = "Powered by Realtime Audio & Cloud Firestore",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.5f)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "Version 1.0.1 (Build 3)",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = GoldPremium.copy(alpha = 0.7f)
+            )
+        }
     }
 }
