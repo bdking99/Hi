@@ -3,15 +3,18 @@ package com.example.data.model
 data class RoomData(
     // 🆔 Core Identification
     val id: String = "",
+    val numericId: String = "", // Permanent unique numeric ID (e.g. 739281)
     val title: String = "",
     val description: String = "Welcome to our voice room!",
+    val coverUrl: String = "",
     
-    // 👤 Host Details
+    // 👤 Host & Co-host Details
     val hostId: String = "",
     val hostName: String = "",
     val hostAvatar: String = "",
     val agencyName: String = "Voice Club",
     val hostLevel: Int = 1,
+    val coHostIds: List<String> = emptyList(),
     
     // 👑 Premium & Monetization Features
     val isPremiumRoom: Boolean = false,

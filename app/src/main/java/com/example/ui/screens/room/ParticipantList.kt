@@ -41,8 +41,11 @@ data class RoomParticipant(
 fun ParticipantList(
     participants: List<RoomParticipant>,
     modifier: Modifier = Modifier,
+    isHost: Boolean = false,
+    currentUserId: String = "",
     onUserClick: (RoomParticipant) -> Unit = {},
-    onSendGiftClick: (RoomParticipant) -> Unit = {}
+    onSendGiftClick: (RoomParticipant) -> Unit = {},
+    onToggleCoHost: (userId: String, isCoHost: Boolean) -> Unit = { _, _ -> }
 ) {
     Card(
         modifier = modifier
@@ -122,8 +125,11 @@ fun ParticipantList(
                     items(participants, key = { it.userId }) { user ->
                         ParticipantRowItem(
                             user = user,
+                            isHost = isHost,
+                            canManage = isHost && user.userId != currentUserId && user.role != "Host",
                             onUserClick = { onUserClick(user) },
-                            onSendGiftClick = { onSendGiftClick(user) }
+                            onSendGiftClick = { onSendGiftClick(user) },
+                            onToggleCoHost = { promote -> onToggleCoHost(user.userId, promote) }
                         )
                     }
                 }
@@ -135,8 +141,11 @@ fun ParticipantList(
 @Composable
 fun ParticipantRowItem(
     user: RoomParticipant,
+    isHost: Boolean = false,
+    canManage: Boolean = false,
     onUserClick: () -> Unit,
-    onSendGiftClick: () -> Unit
+    onSendGiftClick: () -> Unit,
+    onToggleCoHost: (Boolean) -> Unit = {}
 ) {
     Surface(
         modifier = Modifier
@@ -239,6 +248,7 @@ fun ParticipantRowItem(
                         // Role badge
                         val roleColor = when (user.role) {
                             "Host" -> GoldPremium
+                            "Co-Host" -> Color(0xFFFFB74D)
                             "Speaker" -> TealPremium
                             else -> Color.White.copy(alpha = 0.5f)
                         }
@@ -258,10 +268,21 @@ fun ParticipantRowItem(
                 }
             }
 
-            // Right: Mic / Mute Status Indicator + Quick Gift Action
+            // Right: Co-Host toggle button (for host) + Mic Status + Gift Action
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (canManage) {
+                    val isCurrentlyCoHost = user.role == "Co-Host"
+                    IconButton(
+                        onClick = { onToggleCoHost(!isCurrentlyCoHost) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Text(if (isCurrentlyCoHost) "👑" else "🎖️", fontSize = 16.sp)
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+
                 // Mic Status
-                if (user.role == "Host" || user.role == "Speaker") {
+                if (user.role == "Host" || user.role == "Co-Host" || user.role == "Speaker") {
                     Surface(
                         shape = CircleShape,
                         color = if (user.isMuted) Color(0xFFE53935).copy(alpha = 0.2f) else TealPremium.copy(alpha = 0.2f),

@@ -12,7 +12,7 @@ data class ProfileEntity(
     val svipLevel: Int = 0,
     val followersCount: Int = 0,
     val followingCount: Int = 0,
-    val agencyId: String?,
+    val agencyId: String? = null,
     val coinBalance: Long = 0,
     val earnings: Long = 0
 )

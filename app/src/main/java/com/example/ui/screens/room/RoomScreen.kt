@@ -2,6 +2,9 @@ package com.example.ui.screens.room
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -417,7 +420,7 @@ fun RoomScreen(
                             onClick = {
                                 executeWithPermissionCheck {
                                     selectedRoomForLive = room
-                                    viewModel?.selectRoom(room.id)
+                                    viewModel?.selectRoom(room.id, mainContext)
                                 }
                             }
                         )
@@ -438,9 +441,9 @@ fun RoomScreen(
     if (showCreateRoomDialog) {
         CreateRoomDialog(
             onDismiss = { showCreateRoomDialog = false },
-            onCreate = { title, category, description ->
+            onCreate = { title, category, description, coverUrl, password, roomType ->
                 showCreateRoomDialog = false
-                viewModel?.createRoom(title, description, category) { newRoomId ->
+                viewModel?.createRoom(title, description, category, coverUrl, password, roomType) { newRoomId ->
                     val newLiveRoom = LiveRoom(
                         id = newRoomId,
                         title = title,
@@ -454,14 +457,24 @@ fun RoomScreen(
                         bgGradient = listOf(Color(0xFF2D124D), Color(0xFF1B1035))
                     )
                     selectedRoomForLive = newLiveRoom
-                    viewModel.selectRoom(newRoomId)
+                    viewModel.selectRoom(newRoomId, mainContext)
                 }
             }
         )
     }
 
-    // Interactive Live Voice Room Sheet
-    if (selectedRoomForLive != null) {
+    // Interactive Full-Screen Live Voice Room
+    if (selectedRoomForLive != null && viewModel != null) {
+        FullScreenVoiceRoom(
+            viewModel = viewModel,
+            roomId = selectedRoomForLive!!.id,
+            onLeaveRoom = {
+                viewModel.closeCurrentRoom()
+                selectedRoomForLive = null
+            },
+            onNavigateWallet = onNavigateWallet
+        )
+    } else if (selectedRoomForLive != null) {
         LiveVoiceRoomBottomSheet(
             room = selectedRoomForLive!!,
             viewModel = viewModel,
@@ -489,15 +502,21 @@ fun RoomScreen(
             text = {
                 OutlinedTextField(
                     value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search by title, host, or agency...") },
+                    onValueChange = {
+                        searchQuery = it
+                        viewModel?.setSearchQuery(it)
+                    },
+                    placeholder = { Text("Search by title, Room ID, host...") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
-                Button(onClick = { showSearchDialog = false }) {
+                Button(onClick = {
+                    viewModel?.setSearchQuery(searchQuery)
+                    showSearchDialog = false
+                }) {
                     Text("Search")
                 }
             },
@@ -1138,6 +1157,11 @@ fun LiveVoiceRoomBottomSheet(
     val visitedProfile by viewModel?.visitedUserProfile?.collectAsState() ?: remember { mutableStateOf(null) }
     val visitedGifts by viewModel?.visitedUserGifts?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
     val uiNotice by viewModel?.uiNotice?.collectAsState() ?: remember { mutableStateOf(null) }
+    val roomMembers by viewModel?.roomMembers?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
+    val speakerRequests by viewModel?.speakerRequests?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
+    val isMicrophoneMuted by viewModel?.isMicrophoneMuted?.collectAsState() ?: remember { mutableStateOf(false) }
+    val isSpeakingLocally by viewModel?.isSpeakingLocally?.collectAsState() ?: remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
 
     var inputComment by remember { mutableStateOf("") }
     var showGiftDialog by remember { mutableStateOf(false) }
@@ -1147,6 +1171,9 @@ fun LiveVoiceRoomBottomSheet(
     var celebrationGift by remember { mutableStateOf<GiftTransaction?>(null) }
     var showDeleteRoomConfirm by remember { mutableStateOf(false) }
     var showInRoomDragonTiger by remember { mutableStateOf(false) }
+    var showSpeakerRequestsDialog by remember { mutableStateOf(false) }
+    var showRoomModerationDialog by remember { mutableStateOf(false) }
+    var selectedSeatForAction by remember { mutableStateOf<Pair<Int, SeatData>?>(null) }
 
     // Microphone runtime permission state
     val context = LocalContext.current
@@ -1233,16 +1260,21 @@ fun LiveVoiceRoomBottomSheet(
 
     // In-Room Dragon vs Tiger Game Arena
     if (showInRoomDragonTiger) {
-        com.example.ui.screens.game.DragonVsTigerArena(
-            coinBalance = currentUser.coinBalance,
-            onDismiss = { showInRoomDragonTiger = false },
-            onBetPlaced = { betAmt ->
-                // Deduct coins locally
-            },
-            onWinWon = { wonAmt ->
-                viewModel?.rechargeCoins(wonAmt, "Dragon Tiger Win")
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showInRoomDragonTiger = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                com.example.ui.screens.game.GameScreen(
+                    currentCoins = currentUser.coinBalance,
+                    vipLevel = currentUser.vipLevel,
+                    onAddCoinsClick = { onNavigateWallet() },
+                    onCoinWon = { wonAmt ->
+                        viewModel?.rechargeCoins(wonAmt, "Game Win")
+                    }
+                )
             }
-        )
+        }
     }
 
     // Delete Room Confirmation Dialog
@@ -1309,12 +1341,69 @@ fun LiveVoiceRoomBottomSheet(
     val mySeatIndex = mySeat?.seatIndex
     val isMyMicMuted = mySeat?.isMuted ?: false
     val isHost = (currentRoomData?.hostId == currentUser.userId) || (room.hostName == currentUser.displayName)
+    val isCoHost = currentRoomData?.coHostIds?.contains(currentUser.userId) == true
+    val isHostOrCoHost = isHost || isCoHost
+    val hasActiveSpeakerRequest = speakerRequests.any { it.userId == currentUser.userId }
+
+    // Speaker Requests Dialog (Host / Co-Host)
+    if (showSpeakerRequestsDialog) {
+        SpeakerRequestsDialog(
+            requests = speakerRequests,
+            onDismiss = { showSpeakerRequestsDialog = false },
+            onApprove = { req ->
+                viewModel?.approveSpeakerRequest(room.id, req)
+                showSpeakerRequestsDialog = false
+            },
+            onReject = { userId ->
+                viewModel?.rejectSpeakerRequest(room.id, userId)
+            }
+        )
+    }
+
+    // Room Moderation Dialog (Host / Co-Host)
+    if (showRoomModerationDialog) {
+        RoomModerationDialog(
+            isRoomLocked = currentRoomData?.isLocked ?: false,
+            onDismiss = { showRoomModerationDialog = false },
+            onMuteAll = { viewModel?.muteAllSeats(room.id, true) },
+            onUnmuteAll = { viewModel?.muteAllSeats(room.id, false) },
+            onToggleLock = { locked, password ->
+                viewModel?.setRoomLock(room.id, locked, password)
+            }
+        )
+    }
+
+    // Seat Action Dialog (Seat info, kick, mute, lock, gift, visit profile)
+    if (selectedSeatForAction != null) {
+        val (seatIdx, seatData) = selectedSeatForAction!!
+        SeatActionDialog(
+            seatIndex = seatIdx,
+            seat = seatData,
+            isHostOrCoHost = isHostOrCoHost,
+            onDismiss = { selectedSeatForAction = null },
+            onViewProfile = { userId -> viewModel?.visitUserProfile(userId) },
+            onMuteSpeaker = {
+                viewModel?.hostControlSeat(room.id, seatIdx, kick = false, mute = !seatData.isMuted)
+            },
+            onKickSpeaker = {
+                viewModel?.removeSpeaker(room.id, seatIdx)
+            },
+            onToggleLockSeat = {
+                viewModel?.lockSeat(room.id, seatIdx, !seatData.isLocked)
+            },
+            onSendGift = { recId, recName ->
+                giftRecipientId = recId
+                giftRecipientName = recName
+                showGiftDialog = true
+            }
+        )
+    }
 
     // 1. Visited User Profile Dialog
     if (visitedProfile != null) {
         UserProfileVisitDialog(
             user = visitedProfile!!,
-            isHost = isHost,
+            isHost = isHostOrCoHost,
             isMe = visitedProfile!!.userId == currentUser.userId,
             receivedGifts = visitedGifts,
             onDismiss = { viewModel?.clearVisitedUser() },
@@ -1369,25 +1458,36 @@ fun LiveVoiceRoomBottomSheet(
 
     // 3. Participant List Dialog
     if (showParticipantList) {
-        val participants: List<RoomParticipant> = remember(seats, currentUser) {
-            val speakers = seats.filter { it.userId != null }.map { seat ->
-                RoomParticipant(
-                    userId = seat.userId ?: "",
-                    displayName = seat.userName ?: "Speaker",
-                    avatarUrl = seat.userAvatar ?: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
-                    isMuted = seat.isMuted,
-                    isSpeaking = seat.isSpeaking,
-                    role = if (seat.seatIndex == 0) "Host" else "Speaker",
-                    level = 10,
-                    vipLevel = 2
-                )
+        val participants: List<RoomParticipant> = remember(roomMembers, seats, currentUser) {
+            if (roomMembers.isNotEmpty()) {
+                roomMembers.map { member ->
+                    val seat = seats.firstOrNull { it.userId == member.uid }
+                    RoomParticipant(
+                        userId = member.uid,
+                        displayName = member.displayName.ifBlank { "User" },
+                        avatarUrl = member.avatarUrl.ifBlank { "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150" },
+                        isSpeaking = seat?.isSpeaking ?: member.isSpeaking,
+                        isMuted = seat?.isMuted ?: member.isMuted,
+                        role = member.role.replaceFirstChar { it.uppercase() },
+                        level = 1,
+                        vipLevel = 0
+                    )
+                }
+            } else {
+                val speakers = seats.filter { it.userId != null }.map { seat ->
+                    RoomParticipant(
+                        userId = seat.userId ?: "",
+                        displayName = seat.userName ?: "Speaker",
+                        avatarUrl = seat.userAvatar ?: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
+                        isMuted = seat.isMuted,
+                        isSpeaking = seat.isSpeaking,
+                        role = if (seat.seatIndex == 0) "Host" else if (seat.isCoHost) "Co-Host" else "Speaker",
+                        level = 10,
+                        vipLevel = 2
+                    )
+                }
+                speakers
             }
-            val audience = listOf(
-                RoomParticipant(userId = "AUD_1", displayName = "Marcus Aurelius", avatarUrl = "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150", role = "VIP", level = 15, vipLevel = 3),
-                RoomParticipant(userId = "AUD_2", displayName = "Aria Vance", avatarUrl = "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150", role = "Listener", level = 6, vipLevel = 1),
-                RoomParticipant(userId = "AUD_3", displayName = "Tariq Zaman", avatarUrl = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150", role = "Listener", level = 4, vipLevel = 0)
-            )
-            speakers + audience
         }
 
         AlertDialog(
@@ -1428,6 +1528,8 @@ fun LiveVoiceRoomBottomSheet(
 
                     ParticipantList(
                         participants = participants,
+                        isHost = isHost,
+                        currentUserId = currentUser.userId,
                         onUserClick = { user ->
                             showParticipantList = false
                             viewModel?.visitUserProfile(user.userId)
@@ -1437,6 +1539,9 @@ fun LiveVoiceRoomBottomSheet(
                             giftRecipientId = user.userId
                             giftRecipientName = user.displayName
                             showGiftDialog = true
+                        },
+                        onToggleCoHost = { targetId, promote ->
+                            viewModel?.assignCoHost(room.id, targetId, promote)
                         }
                     )
                 }
@@ -1457,7 +1562,7 @@ fun LiveVoiceRoomBottomSheet(
                 .padding(bottom = 20.dp)
                 .testTag("live_voice_room_sheet")
         ) {
-            // 1. Room Header (Host info, Tag, Online count, Participants button, Leave button)
+            // 1. Room Header (Host info, Room ID, Tag, Online count, Requests, Moderation, Participants, Leave)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1484,17 +1589,43 @@ fun LiveVoiceRoomBottomSheet(
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
-                        Text(
-                            text = currentRoomData?.title ?: room.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "${room.hostName} • ${room.tag}",
+                                text = currentRoomData?.title ?: room.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (currentRoomData?.isLocked == true) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("🔒", fontSize = 12.sp)
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val displayId = currentRoomData?.numericId?.ifBlank { room.id } ?: room.id
+                            Text(
+                                text = "ID: $displayId",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = GoldPremium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy Room ID",
+                                tint = GoldPremium.copy(alpha = 0.8f),
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .clickable {
+                                        clipboardManager.setText(AnnotatedString(displayId))
+                                        Toast.makeText(context, "Room ID copied! 📋", Toast.LENGTH_SHORT).show()
+                                    }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "• ${room.tag}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TealPremium
                             )
@@ -1514,7 +1645,47 @@ fun LiveVoiceRoomBottomSheet(
                         Text("🐉", fontSize = 16.sp)
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // Host / Co-Host Speaker Requests Badge Button
+                    if (isHostOrCoHost) {
+                        IconButton(
+                            onClick = { showSpeakerRequestsDialog = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (speakerRequests.isNotEmpty()) GoldPremium.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.08f))
+                                .border(1.dp, if (speakerRequests.isNotEmpty()) GoldPremium else Color.Transparent, RoundedCornerShape(12.dp))
+                                .testTag("speaker_requests_badge_button")
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (speakerRequests.isNotEmpty()) {
+                                        Badge(containerColor = Color(0xFFFF5252)) {
+                                            Text("${speakerRequests.size}")
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text("✋", fontSize = 16.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        // Host Moderation Controls Button (Shield)
+                        IconButton(
+                            onClick = { showRoomModerationDialog = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF673AB7).copy(alpha = 0.25f))
+                                .border(1.dp, Color(0xFF673AB7), RoundedCornerShape(12.dp))
+                                .testTag("room_moderation_button")
+                        ) {
+                            Icon(Icons.Default.Security, contentDescription = "Moderation", tint = Color(0xFFD1C4E9))
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
 
                     // Participants Button
                     IconButton(
@@ -1528,7 +1699,7 @@ fun LiveVoiceRoomBottomSheet(
                     }
 
                     if (isHost) {
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         // Delete Room Button for Host
                         IconButton(
                             onClick = { showDeleteRoomConfirm = true },
@@ -1541,7 +1712,7 @@ fun LiveVoiceRoomBottomSheet(
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     // Leave Room
                     IconButton(
@@ -1629,7 +1800,7 @@ fun LiveVoiceRoomBottomSheet(
 
             // 2. 8 Stage Voice Seats Responsive Grid (Material 3 SpeakerSeat Cards with Custom Shapes & Elevation)
             Text(
-                text = "🎙️ Live Stage Seats (Tap empty seat to speak, tap user to visit)",
+                text = "🎙️ Live Stage Seats (Tap seat to interact, manage, or speak)",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White.copy(alpha = 0.6f)
             )
@@ -1650,18 +1821,30 @@ fun LiveVoiceRoomBottomSheet(
                         val isOccupied = seat.userId != null
                         SpeakerSeat(
                             seatNumber = i,
-                            label = if (i == 0) "Host 👑" else "Seat ${i + 1}",
-                            userName = if (isOccupied) (seat.userName ?: "Speaker") else "Empty",
+                            label = if (i == 0) "Host 👑" else if (seat.isCoHost) "Co-Host 🎖️" else if (seat.isLocked) "Locked 🔒" else "Seat ${i + 1}",
+                            userName = if (isOccupied) (seat.userName ?: "Speaker") else if (seat.isLocked) "Locked" else "Empty",
                             avatarUrl = seat.userAvatar,
                             isOccupied = isOccupied,
-                            isSpeaking = seat.isSpeaking,
+                            isSpeaking = if (seat.userId == currentUser.userId) isSpeakingLocally else seat.isSpeaking,
                             isMuted = seat.isMuted,
                             onClick = {
                                 if (isOccupied) {
-                                    viewModel?.visitUserProfile(seat.userId ?: "")
+                                    selectedSeatForAction = Pair(i, seat)
                                 } else {
-                                    checkAndExecuteWithMicPermission {
-                                        viewModel?.takeSeat(room.id, i)
+                                    if (seat.isLocked) {
+                                        if (isHostOrCoHost) {
+                                            selectedSeatForAction = Pair(i, seat)
+                                        } else {
+                                            Toast.makeText(context, "This seat is locked 🔒", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        if (isHostOrCoHost) {
+                                            selectedSeatForAction = Pair(i, seat)
+                                        } else {
+                                            checkAndExecuteWithMicPermission {
+                                                viewModel?.takeSeat(room.id, i)
+                                            }
+                                        }
                                     }
                                 }
                             },
@@ -1680,18 +1863,30 @@ fun LiveVoiceRoomBottomSheet(
                         val isOccupied = seat.userId != null
                         SpeakerSeat(
                             seatNumber = i,
-                            label = "Seat ${i + 1}",
-                            userName = if (isOccupied) (seat.userName ?: "Speaker") else "Empty",
+                            label = if (seat.isCoHost) "Co-Host 🎖️" else if (seat.isLocked) "Locked 🔒" else "Seat ${i + 1}",
+                            userName = if (isOccupied) (seat.userName ?: "Speaker") else if (seat.isLocked) "Locked" else "Empty",
                             avatarUrl = seat.userAvatar,
                             isOccupied = isOccupied,
-                            isSpeaking = seat.isSpeaking,
+                            isSpeaking = if (seat.userId == currentUser.userId) isSpeakingLocally else seat.isSpeaking,
                             isMuted = seat.isMuted,
                             onClick = {
                                 if (isOccupied) {
-                                    viewModel?.visitUserProfile(seat.userId ?: "")
+                                    selectedSeatForAction = Pair(i, seat)
                                 } else {
-                                    checkAndExecuteWithMicPermission {
-                                        viewModel?.takeSeat(room.id, i)
+                                    if (seat.isLocked) {
+                                        if (isHostOrCoHost) {
+                                            selectedSeatForAction = Pair(i, seat)
+                                        } else {
+                                            Toast.makeText(context, "This seat is locked 🔒", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        if (isHostOrCoHost) {
+                                            selectedSeatForAction = Pair(i, seat)
+                                        } else {
+                                            checkAndExecuteWithMicPermission {
+                                                viewModel?.takeSeat(room.id, i)
+                                            }
+                                        }
                                     }
                                 }
                             },
@@ -1747,6 +1942,18 @@ fun LiveVoiceRoomBottomSheet(
                                 }
                                 .padding(vertical = 2.dp)
                         ) {
+                            if (!msg.isSystem && msg.vipLevel > 0) {
+                                com.example.ui.components.VipBadge(
+                                    vipType = if (msg.vipLevel >= 8) "SVIP" else "VIP",
+                                    vipLevel = msg.vipLevel,
+                                    svipLevel = msg.svipLevel
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            if (!msg.isSystem && msg.userLevel > 0) {
+                                com.example.ui.components.UserLevelBadge(level = msg.userLevel)
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
                             Text(
                                 text = "${msg.senderName}: ",
                                 color = if (msg.isSystem) TealPremium else Color.White.copy(alpha = 0.7f),
@@ -1769,6 +1976,7 @@ fun LiveVoiceRoomBottomSheet(
 
             // 4. Interactive Bottom Controls:
             // - If user is on stage: Mute/Unmute Mic + Step Down
+            // - If audience: Request to speak button
             // - Comment text field + Send
             // - Quick gifts (🌹 10, 👑 500, 🚀 1,000)
             // - Gift Catalog button 🎁
@@ -1776,12 +1984,11 @@ fun LiveVoiceRoomBottomSheet(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Speaker mic toggle button
+                // Speaker mic toggle button & Step down button
                 if (mySeatIndex != null) {
                     IconButton(
                         onClick = {
                             if (isMyMicMuted) {
-                                // Request mic permission if unmuting
                                 checkAndExecuteWithMicPermission {
                                     viewModel?.toggleMicMute(room.id, mySeatIndex, false)
                                 }
@@ -1801,6 +2008,55 @@ fun LiveVoiceRoomBottomSheet(
                             contentDescription = if (isMyMicMuted) "Unmute Mic" else "Mute Mic",
                             tint = if (isMyMicMuted) Color(0xFFFF5252) else TealPremium,
                             modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Step down / leave seat button
+                    IconButton(
+                        onClick = { viewModel?.leaveSeat(room.id, mySeatIndex) },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.1f))
+                            .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                            .testTag("leave_seat_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AirlineSeatReclineNormal,
+                            contentDescription = "Leave Seat",
+                            tint = Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                } else {
+                    // Audience: Request to Speak button
+                    Button(
+                        onClick = {
+                            if (hasActiveSpeakerRequest) {
+                                viewModel?.cancelSpeakerRequest(room.id)
+                            } else {
+                                checkAndExecuteWithMicPermission {
+                                    viewModel?.requestToSpeak(room.id)
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (hasActiveSpeakerRequest) GoldPremium.copy(alpha = 0.25f) else TealPremium.copy(alpha = 0.2f)
+                        ),
+                        border = BorderStroke(1.dp, if (hasActiveSpeakerRequest) GoldPremium else TealPremium),
+                        shape = RoundedCornerShape(24.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .testTag("request_to_speak_button")
+                    ) {
+                        Text(
+                            text = if (hasActiveSpeakerRequest) "✋ Cancel" else "✋ Speak",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (hasActiveSpeakerRequest) GoldPremium else TealPremium
                         )
                     }
                     Spacer(modifier = Modifier.width(6.dp))

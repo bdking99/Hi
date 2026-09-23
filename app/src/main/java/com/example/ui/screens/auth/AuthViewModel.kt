@@ -25,29 +25,33 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
         }
     }
 
-    fun quickDemoLogin() {
+    fun sendPasswordReset(email: String) {
+        if (email.isBlank()) {
+            _uiState.value = AuthUiState.Error("Please enter your email to receive a password reset link.")
+            return
+        }
         _uiState.value = AuthUiState.Loading
         viewModelScope.launch {
-            val result = authRepository.quickDemoLogin()
+            val result = authRepository.sendPasswordResetEmail(email)
             if (result.isSuccess) {
-                _uiState.value = AuthUiState.Success
+                _uiState.value = AuthUiState.ResetEmailSent("Password reset link sent to $email. Please check your inbox.")
             } else {
-                _uiState.value = AuthUiState.Error(result.exceptionOrNull()?.message ?: "Quick Login failed")
+                _uiState.value = AuthUiState.Error(result.exceptionOrNull()?.message ?: "Failed to send reset email.")
             }
         }
     }
 
-    fun register(username: String, email: String, displayName: String, passwordRaw: String) {
+    fun register(username: String, email: String, displayName: String, passwordRaw: String, avatarUrl: String? = null) {
         _uiState.value = AuthUiState.Loading
         viewModelScope.launch {
-            val result = authRepository.register(username, email, displayName, passwordRaw, null)
+            val result = authRepository.register(username, email, displayName, passwordRaw, null, avatarUrl)
             if (result.isSuccess) {
                 // Auto-login after register
                 val loginResult = authRepository.login(email, passwordRaw)
                 if (loginResult.isSuccess) {
                     _uiState.value = AuthUiState.Success
                 } else {
-                    _uiState.value = AuthUiState.Error("Registered successfully but login failed. Please login.")
+                    _uiState.value = AuthUiState.Error("Registered successfully! Please login with your credentials.")
                 }
             } else {
                 _uiState.value = AuthUiState.Error(result.exceptionOrNull()?.message ?: "Registration failed")
@@ -64,5 +68,6 @@ sealed class AuthUiState {
     object Idle : AuthUiState()
     object Loading : AuthUiState()
     object Success : AuthUiState()
+    data class ResetEmailSent(val message: String) : AuthUiState()
     data class Error(val message: String) : AuthUiState()
 }

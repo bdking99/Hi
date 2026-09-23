@@ -17,8 +17,8 @@ android {
     applicationId = "great.voice.chat"
     minSdk = 24
     targetSdk = 36
-    versionCode = 3
-    versionName = "1.0.1"
+    versionCode = 4
+    versionName = "1.0.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -122,6 +122,7 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
+  implementation("io.getstream:stream-webrtc-android:1.3.10")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

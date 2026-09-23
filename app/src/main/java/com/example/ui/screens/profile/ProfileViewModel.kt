@@ -7,6 +7,7 @@ import com.example.data.repository.UserRepository
 import com.example.data.local.entity.UserEntity
 import com.example.data.local.entity.ProfileEntity
 import com.example.data.model.FirebaseUserProfile
+import com.example.data.model.ProfileFrame
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -18,8 +19,8 @@ sealed class ProfileUiState<out T> {
 }
 
 class ProfileViewModel(
-    private val authRepository: AuthRepository,
-    private val userRepository: UserRepository
+    val authRepository: AuthRepository,
+    val userRepository: UserRepository
 ) : ViewModel() {
 
     private val _user = MutableStateFlow<UserEntity?>(null)
@@ -28,12 +29,15 @@ class ProfileViewModel(
     private val _profile = MutableStateFlow<ProfileEntity?>(null)
     val profile: StateFlow<ProfileEntity?> = _profile.asStateFlow()
 
-    // Public Profile state (from Firestore) for current or viewed users
+    // Public Profile state (from Firestore) for current user
     private val _publicProfileState = MutableStateFlow<ProfileUiState<FirebaseUserProfile>>(ProfileUiState.Loading)
     val publicProfileState: StateFlow<ProfileUiState<FirebaseUserProfile>> = _publicProfileState.asStateFlow()
 
-    private val _viewedUserProfile = MutableStateFlow<ProfileUiState<FirebaseUserProfile>>(ProfileUiState.Idle)
-    val viewedUserProfile: StateFlow<ProfileUiState<FirebaseUserProfile>> = _viewedUserProfile.asStateFlow()
+    val availableFrames: StateFlow<List<ProfileFrame>> = userRepository.getAvailableFramesStream()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), userRepository.getDefaultFrames())
+
+    val currentUserId: String
+        get() = authRepository.currentFirebaseUid ?: _user.value?.id ?: ""
 
     init {
         loadProfileData()
@@ -41,52 +45,59 @@ class ProfileViewModel(
 
     private fun loadProfileData() {
         viewModelScope.launch {
-            val token = authRepository.currentSessionToken.firstOrNull() ?: return@launch
-            val session = authRepository.getCurrentSession(token) ?: return@launch
-            
-            userRepository.getUserFlow(session.userId).collect {
-                _user.value = it
-            }
-        }
-        viewModelScope.launch {
-            val token = authRepository.currentSessionToken.firstOrNull() ?: return@launch
-            val session = authRepository.getCurrentSession(token) ?: return@launch
-            
-            userRepository.getProfileFlow(session.userId).collect {
-                _profile.value = it
-            }
-        }
-        viewModelScope.launch {
-            val token = authRepository.currentSessionToken.firstOrNull() ?: return@launch
-            val session = authRepository.getCurrentSession(token) ?: return@launch
+            authRepository.currentUserIdFlow.collect { storedUid ->
+                val activeUid = storedUid ?: authRepository.currentFirebaseUid
+                if (activeUid != null) {
+                    // Update presence in Firestore
+                    userRepository.updatePresence(activeUid, true)
 
-            // Fetch public profile stream from Firestore
-            userRepository.getPublicProfileStream(session.userId).collect { firestoreProfile ->
-                if (firestoreProfile != null) {
-                    _publicProfileState.value = ProfileUiState.Success(firestoreProfile)
-                } else {
-                    _publicProfileState.value = ProfileUiState.Error("Profile not found")
+                    // Collect local user
+                    launch {
+                        userRepository.getUserFlow(activeUid).collect {
+                            _user.value = it
+                        }
+                    }
+                    // Collect local profile
+                    launch {
+                        userRepository.getProfileFlow(activeUid).collect {
+                            _profile.value = it
+                        }
+                    }
+                    // Collect Firestore profile
+                    launch {
+                        userRepository.getPublicProfileStream(activeUid).collect { firestoreProfile ->
+                            if (firestoreProfile != null) {
+                                _publicProfileState.value = ProfileUiState.Success(firestoreProfile)
+                            } else {
+                                // If Firestore doc not yet created, build initial view from local room
+                                val local = _user.value
+                                if (local != null) {
+                                    val fallback = FirebaseUserProfile(
+                                        userId = local.id,
+                                        publicUserId = local.publicUserId,
+                                        displayName = local.displayName,
+                                        username = local.username,
+                                        email = local.email ?: "",
+                                        avatar = local.avatar ?: "",
+                                        isOnline = true
+                                    )
+                                    _publicProfileState.value = ProfileUiState.Success(fallback)
+                                } else {
+                                    _publicProfileState.value = ProfileUiState.Loading
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    /**
-     * Query public profile data from Firestore for any given user ID with state management
-     */
-    fun fetchPublicUserProfile(userId: String) {
-        _viewedUserProfile.value = ProfileUiState.Loading
+    fun selectProfileFrame(frameId: String) {
         viewModelScope.launch {
-            try {
-                userRepository.getPublicProfileStream(userId).collect { profile ->
-                    if (profile != null) {
-                        _viewedUserProfile.value = ProfileUiState.Success(profile)
-                    } else {
-                        _viewedUserProfile.value = ProfileUiState.Error("User profile not found")
-                    }
-                }
-            } catch (e: Exception) {
-                _viewedUserProfile.value = ProfileUiState.Error(e.message ?: "Failed to load profile")
+            val uid = currentUserId
+            if (uid.isNotBlank()) {
+                userRepository.updateProfileFrame(uid, frameId)
             }
         }
     }
@@ -98,11 +109,22 @@ class ProfileViewModel(
         }
     }
 
-    fun updateProfile(displayName: String, bio: String, avatar: String?, coverImage: String?, onComplete: () -> Unit) {
+    fun updateProfile(
+        displayName: String,
+        bio: String,
+        avatar: String?,
+        coverImage: String?,
+        country: String? = null,
+        gender: String? = null,
+        onComplete: () -> Unit
+    ) {
         viewModelScope.launch {
-            val userVal = _user.value ?: return@launch
-            userRepository.updateProfile(userVal.id, displayName, bio, avatar, coverImage)
-            onComplete()
+            val uid = currentUserId
+            if (uid.isNotBlank()) {
+                userRepository.updateProfile(uid, displayName, bio, avatar, coverImage, country, gender)
+                onComplete()
+            }
         }
     }
 }
+

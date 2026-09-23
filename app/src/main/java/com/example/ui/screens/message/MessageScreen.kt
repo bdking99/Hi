@@ -18,198 +18,43 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import com.example.data.model.DirectConversationItem
+import com.example.data.model.FirebaseUserProfile
+import com.example.data.repository.UserRepository
+import com.example.ui.components.ProfileFrameComponent
+import com.example.ui.components.UserSearchSheet
+import com.example.ui.screens.call.CallHistorySheet
+import com.example.ui.screens.call.CallViewModel
 import com.example.ui.theme.GoldPremium
 import com.example.ui.theme.TealPremium
-
-data class ChatMessage(
-    val id: String,
-    val senderName: String,
-    val text: String,
-    val timestamp: String,
-    val isFromMe: Boolean
-)
-
-data class ChatConversation(
-    val id: String,
-    val name: String,
-    val avatarUrl: String,
-    val lastMessage: String,
-    val timestamp: String,
-    val distance: String,
-    val unreadCount: Int,
-    val isOnline: Boolean,
-    val isSystem: Boolean,
-    val systemIcon: ImageVector? = null,
-    val systemIconColor: Color = Color.Unspecified,
-    val vipLevel: Int? = null,
-    val category: String = "Message" // "Message", "Friends", "Family"
-)
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MessageScreen() {
+fun MessageScreen(
+    chatViewModel: ChatViewModel,
+    callViewModel: CallViewModel,
+    userRepository: UserRepository,
+    currentUserId: String
+) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Message", "Friends", "Family")
+    val tabs = listOf("Chats", "Calls", "Notices")
 
-    // State for interactive chat details
-    var activeChatConversation by remember { mutableStateOf<ChatConversation?>(null) }
-    var showSearchDialog by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val conversations by chatViewModel.conversations.collectAsState()
+    val isLoadingConversations by chatViewModel.isLoadingConversations.collectAsState()
+    val activeConversationId by chatViewModel.activeConversationId.collectAsState()
 
-    // Chat data
-    var conversations by remember {
-        mutableStateOf(
-            listOf(
-                // System Notifications
-                ChatConversation(
-                    id = "sys_1",
-                    name = "System Notice",
-                    avatarUrl = "",
-                    lastMessage = "Security Alert: Welcome to Great Voice Room! Bind your phone for extra protection.",
-                    timestamp = "10:30 AM",
-                    distance = "Official",
-                    unreadCount = 1,
-                    isOnline = true,
-                    isSystem = true,
-                    systemIcon = Icons.Filled.Shield,
-                    systemIconColor = Color(0xFF2979FF),
-                    category = "Message"
-                ),
-                ChatConversation(
-                    id = "sys_2",
-                    name = "Reward Assistant",
-                    avatarUrl = "",
-                    lastMessage = "Daily Check-in Bonus: +200 Coins deposited into your wallet! 🎁",
-                    timestamp = "Yesterday",
-                    distance = "System",
-                    unreadCount = 2,
-                    isOnline = true,
-                    isSystem = true,
-                    systemIcon = Icons.Filled.CardGiftcard,
-                    systemIconColor = GoldPremium,
-                    category = "Message"
-                ),
-                ChatConversation(
-                    id = "sys_3",
-                    name = "Activity Assistant",
-                    avatarUrl = "",
-                    lastMessage = "Brazilian Independence Carnival: Ranking table updated! Check your rank.",
-                    timestamp = "Sep 16",
-                    distance = "Events",
-                    unreadCount = 0,
-                    isOnline = true,
-                    isSystem = true,
-                    systemIcon = Icons.Filled.Campaign,
-                    systemIconColor = Color(0xFFFF4081),
-                    category = "Message"
-                ),
+    var showSearchSheet by remember { mutableStateOf(false) }
+    var showCallHistorySheet by remember { mutableStateOf(false) }
 
-                // Personal Chats
-                ChatConversation(
-                    id = "c1",
-                    name = "Sophia Queen ✨",
-                    avatarUrl = "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150",
-                    lastMessage = "Are you joining the late night voice party tonight? 🎸",
-                    timestamp = "12:45 PM",
-                    distance = "0.01 Km",
-                    unreadCount = 3,
-                    isOnline = true,
-                    isSystem = false,
-                    vipLevel = 5,
-                    category = "Friends"
-                ),
-                ChatConversation(
-                    id = "c2",
-                    name = "Prince Leo 🦁",
-                    avatarUrl = "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150",
-                    lastMessage = "Thanks for the rocket gift in the room earlier! 🔥",
-                    timestamp = "11:20 AM",
-                    distance = "0.4 Km",
-                    unreadCount = 1,
-                    isOnline = true,
-                    isSystem = false,
-                    vipLevel = 3,
-                    category = "Friends"
-                ),
-                ChatConversation(
-                    id = "c3",
-                    name = "Royal Voice Family 👑",
-                    avatarUrl = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150",
-                    lastMessage = "Clan Battle starts in 2 hours! Everyone get ready.",
-                    timestamp = "09:15 AM",
-                    distance = "Clan HQ",
-                    unreadCount = 8,
-                    isOnline = true,
-                    isSystem = false,
-                    vipLevel = 4,
-                    category = "Family"
-                ),
-                ChatConversation(
-                    id = "c4",
-                    name = "Elena Rose 🌹",
-                    avatarUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150",
-                    lastMessage = "See you on the mic later!",
-                    timestamp = "Yesterday",
-                    distance = "1.2 Km",
-                    unreadCount = 0,
-                    isOnline = false,
-                    isSystem = false,
-                    vipLevel = 2,
-                    category = "Friends"
-                ),
-                ChatConversation(
-                    id = "c5",
-                    name = "Samir Khan 🎙️",
-                    avatarUrl = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150",
-                    lastMessage = "Let's co-host the weekend acoustic session.",
-                    timestamp = "Sep 15",
-                    distance = "2.8 Km",
-                    unreadCount = 0,
-                    isOnline = true,
-                    isSystem = false,
-                    vipLevel = 1,
-                    category = "Friends"
-                ),
-                ChatConversation(
-                    id = "c6",
-                    name = "Golden Phoenix Family 🦅",
-                    avatarUrl = "https://images.unsplash.com/photo-1543269865-cbf427effbad?w=150",
-                    lastMessage = "Weekly contribution rewards are ready to collect!",
-                    timestamp = "Sep 14",
-                    distance = "Clan Hub",
-                    unreadCount = 0,
-                    isOnline = false,
-                    isSystem = false,
-                    category = "Family"
-                )
-            )
-        )
-    }
-
-    val filteredConversations = remember(selectedTab, searchQuery, conversations) {
-        val currentTabTitle = tabs[selectedTab]
-        conversations.filter { conv ->
-            val matchesTab = when (currentTabTitle) {
-                "Message" -> true
-                "Friends" -> conv.category == "Friends" || !conv.isSystem
-                "Family" -> conv.category == "Family"
-                else -> true
-            }
-            val matchesSearch = if (searchQuery.isBlank()) true else {
-                conv.name.contains(searchQuery, ignoreCase = true) ||
-                conv.lastMessage.contains(searchQuery, ignoreCase = true)
-            }
-            matchesTab && matchesSearch
-        }
-    }
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -218,98 +63,122 @@ fun MessageScreen() {
                 tabs = tabs,
                 selectedIndex = selectedTab,
                 onTabSelected = { selectedTab = it },
-                onSearchClick = { showSearchDialog = true },
-                onAddContacts = { /* Contacts */ }
+                onSearchClick = { showSearchSheet = true },
+                onCallHistoryClick = { showCallHistorySheet = true }
             )
         }
     ) { padding ->
-        LazyColumn(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .testTag("message_screen_list")
         ) {
-            // Event Center Banner Pinned Above Chat List
-            item {
-                Spacer(modifier = Modifier.height(8.dp))
-                EventCenterBanner()
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // Chat List Section
-            items(filteredConversations, key = { it.id }) { conv ->
-                ChatConversationTile(
-                    conversation = conv,
-                    onClick = {
-                        // Mark as read
-                        conversations = conversations.map {
-                            if (it.id == conv.id) it.copy(unreadCount = 0) else it
+            when (selectedTab) {
+                0 -> {
+                    // TAB 0: Real-Time Private Chats
+                    if (isLoadingConversations && conversations.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = TealPremium)
                         }
-                        activeChatConversation = conv
-                    }
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f),
-                    modifier = Modifier.padding(start = 76.dp, end = 16.dp)
-                )
-            }
+                    } else if (conversations.isEmpty()) {
+                        EmptyChatState(
+                            onStartChat = { showSearchSheet = true }
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("conversation_list")
+                        ) {
+                            item {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                EventCenterBanner()
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
 
-            item {
-                Spacer(modifier = Modifier.height(90.dp))
+                            items(conversations, key = { it.conversation.conversationId }) { item ->
+                                DirectConversationTile(
+                                    item = item,
+                                    currentUserId = currentUserId,
+                                    onClick = {
+                                        chatViewModel.openConversation(
+                                            item.conversation.conversationId,
+                                            item.otherUser
+                                        )
+                                    }
+                                )
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f),
+                                    modifier = Modifier.padding(start = 76.dp, end = 16.dp)
+                                )
+                            }
+
+                            item {
+                                Spacer(modifier = Modifier.height(90.dp))
+                            }
+                        }
+                    }
+                }
+
+                1 -> {
+                    // TAB 1: Voice Calls
+                    CallHistoryList(
+                        callViewModel = callViewModel,
+                        currentUserId = currentUserId,
+                        onNewCall = { showSearchSheet = true }
+                    )
+                }
+
+                2 -> {
+                    // TAB 2: System & Clan Notices
+                    SystemNoticesList()
+                }
             }
         }
     }
 
-    // Interactive Chat Details BottomSheet / Modal
-    if (activeChatConversation != null) {
-        ChatDetailSheet(
-            conversation = activeChatConversation!!,
-            onDismiss = { activeChatConversation = null }
+    // Direct Chat BottomSheet when a conversation is active
+    if (activeConversationId != null) {
+        DirectChatSheet(
+            chatViewModel = chatViewModel,
+            callViewModel = callViewModel,
+            currentUserId = currentUserId,
+            onDismiss = {
+                chatViewModel.closeActiveConversation()
+            }
         )
     }
 
-    // Search Dialog
-    if (showSearchDialog) {
-        AlertDialog(
-            onDismissRequest = { showSearchDialog = false },
-            title = { Text("Search Messages") },
-            text = {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search chats or contacts...") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(onClick = { showSearchDialog = false }) {
-                    Text("Done")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    searchQuery = ""
-                    showSearchDialog = false
-                }) {
-                    Text("Clear")
-                }
+    // Search User Sheet to start new chat or voice call
+    if (showSearchSheet) {
+        UserSearchSheet(
+            userRepository = userRepository,
+            currentUserId = currentUserId,
+            onDismiss = { showSearchSheet = false },
+            onUserSelected = { targetUser ->
+                showSearchSheet = false
+                chatViewModel.openConversationWith(targetUser)
             }
+        )
+    }
+
+    // Dedicated Call History Sheet
+    if (showCallHistorySheet) {
+        CallHistorySheet(
+            viewModel = callViewModel,
+            currentUserId = currentUserId,
+            onDismiss = { showCallHistorySheet = false }
         )
     }
 }
 
-// ----------------------------------------------------
-// Message Top Navigation Bar
-// ----------------------------------------------------
 @Composable
 fun MessageTopBar(
     tabs: List<String>,
     selectedIndex: Int,
     onTabSelected: (Int) -> Unit,
     onSearchClick: () -> Unit,
-    onAddContacts: () -> Unit
+    onCallHistoryClick: () -> Unit
 ) {
     Surface(
         color = MaterialTheme.colorScheme.background,
@@ -323,8 +192,8 @@ fun MessageTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // 3 Filter Tabs: "Message", "Friends", "Family"
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            // Tabs Row
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 tabs.forEachIndexed { index, title ->
                     val isSelected = selectedIndex == index
                     Column(
@@ -342,13 +211,11 @@ fun MessageTopBar(
                         if (isSelected) {
                             Box(
                                 modifier = Modifier
-                                    .width(24.dp)
+                                    .width(26.dp)
                                     .height(3.dp)
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(
-                                        Brush.horizontalGradient(
-                                            listOf(GoldPremium, TealPremium)
-                                        )
+                                        Brush.horizontalGradient(listOf(GoldPremium, TealPremium))
                                     )
                             )
                         } else {
@@ -358,19 +225,19 @@ fun MessageTopBar(
                 }
             }
 
-            // Right Action Icons: Search + New Chat / Contacts
+            // Right Action Icons
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 IconButton(onClick = onSearchClick) {
                     Icon(
-                        imageVector = Icons.Outlined.Search,
-                        contentDescription = "Search",
+                        imageVector = Icons.Outlined.PersonSearch,
+                        contentDescription = "Find User",
                         tint = MaterialTheme.colorScheme.onBackground
                     )
                 }
-                IconButton(onClick = onAddContacts) {
+                IconButton(onClick = onCallHistoryClick) {
                     Icon(
-                        imageVector = Icons.Outlined.GroupAdd,
-                        contentDescription = "Contacts",
+                        imageVector = Icons.Outlined.PhoneInTalk,
+                        contentDescription = "Call History",
                         tint = MaterialTheme.colorScheme.onBackground
                     )
                 }
@@ -379,9 +246,357 @@ fun MessageTopBar(
     }
 }
 
-// ----------------------------------------------------
-// Event Center Banner (Pinned Above Chat List)
-// ----------------------------------------------------
+@Composable
+fun DirectConversationTile(
+    item: DirectConversationItem,
+    currentUserId: String,
+    onClick: () -> Unit
+) {
+    val otherUser = item.otherUser
+    val timeFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
+    val formattedTime = remember(item.conversation.updatedAt) {
+        timeFormat.format(Date(item.conversation.updatedAt))
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // User Avatar with Real VIP Frame & Online Presence
+        Box(modifier = Modifier.size(54.dp), contentAlignment = Alignment.Center) {
+            ProfileFrameComponent(
+                frameId = otherUser?.profileFrameId ?: "frame_default",
+                avatarUrl = otherUser?.avatar ?: "",
+                size = 50.dp,
+                glowActive = otherUser?.isOnline == true
+            )
+
+            if (otherUser?.isOnline == true) {
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF00E676))
+                        .border(2.dp, MaterialTheme.colorScheme.background, CircleShape)
+                        .align(Alignment.BottomEnd)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(14.dp))
+
+        // Content: Name, Last Message, Time, Badges
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = otherUser?.displayName?.ifBlank { "User ${otherUser.publicUserId}" } ?: "Voice User",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if ((otherUser?.vipLevel ?: 0) > 0) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = GoldPremium
+                        ) {
+                            Text(
+                                text = "VIP ${otherUser!!.vipLevel}",
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.Black,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = formattedTime,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(3.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.conversation.lastMessage.ifBlank { "Conversation started" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (item.unreadCount > 0) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (item.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                if (item.unreadCount > 0) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFFFF3366),
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = if (item.unreadCount > 99) "99+" else item.unreadCount.toString(),
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EmptyChatState(onStartChat: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.MarkChatUnread,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.size(68.dp)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "No private messages yet",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Find friends by Public ID to start a conversation or voice call.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 32.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            Button(
+                onClick = onStartChat,
+                colors = ButtonDefaults.buttonColors(containerColor = TealPremium),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Icon(Icons.Default.PersonSearch, contentDescription = null, tint = Color.Black)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Find Users", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun CallHistoryList(
+    callViewModel: CallViewModel,
+    currentUserId: String,
+    onNewCall: () -> Unit
+) {
+    val history by callViewModel.callHistory.collectAsState()
+    val timeFormat = remember { SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()) }
+
+    if (history.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.PhoneCallback,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("No call records", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Calls made with HD WebRTC are logged here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Button(
+                    onClick = onNewCall,
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldPremium),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Icon(Icons.Default.Phone, contentDescription = null, tint = Color.Black)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start Voice Call", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(history, key = { it.callId }) { call ->
+                val isOutgoing = call.callerUid == currentUserId
+                val partnerName = if (isOutgoing) call.receiverDisplayName else call.callerDisplayName
+                val partnerAvatar = if (isOutgoing) call.receiverAvatarUrl else call.callerAvatarUrl
+                val partnerFrame = if (isOutgoing) "frame_default" else call.callerFrameId
+                val partnerPublicId = if (isOutgoing) call.receiverPublicUserId else call.callerPublicUserId
+
+                val durationMin = call.duration / 60
+                val durationSec = call.duration % 60
+                val durationStr = String.format("%02d:%02d", durationMin, durationSec)
+
+                val isMissed = call.status == "missed" || call.status == "rejected"
+                val statusColor = if (isMissed) Color(0xFFFF5252) else TealPremium
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        ProfileFrameComponent(
+                            frameId = partnerFrame,
+                            avatarUrl = partnerAvatar,
+                            size = 48.dp
+                        )
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column {
+                            Text(
+                                text = partnerName.ifBlank { "ID: $partnerPublicId" },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(2.dp))
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = when {
+                                        isMissed -> Icons.Default.CallMissed
+                                        isOutgoing -> Icons.Default.CallMade
+                                        else -> Icons.Default.CallReceived
+                                    },
+                                    contentDescription = null,
+                                    tint = statusColor,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isMissed) "Missed" else durationStr,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = statusColor
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("•", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = timeFormat.format(Date(call.createdAt)),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Call Back Button
+                    IconButton(
+                        onClick = {
+                            val target = FirebaseUserProfile(
+                                userId = if (isOutgoing) call.receiverUid else call.callerUid,
+                                publicUserId = partnerPublicId,
+                                displayName = partnerName,
+                                avatar = partnerAvatar
+                            )
+                            callViewModel.initiateCall(target)
+                        }
+                    ) {
+                        Icon(Icons.Default.Phone, contentDescription = "Call back", tint = TealPremium)
+                    }
+                }
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(start = 78.dp, end = 16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SystemNoticesList() {
+    val notices = listOf(
+        Pair("Security & Privacy", "Great Voice Room uses end-to-end WebRTC calling with secure Firestore signaling."),
+        Pair("Daily VIP Rewards", "Log in daily to claim free diamond gifts and VIP experience points."),
+        Pair("Fair Play Policy", "Harassment, hate speech, and spamming in voice rooms or chats result in instant ban.")
+    )
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        items(notices) { notice ->
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+            ) {
+                Row(modifier = Modifier.padding(16.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = GoldPremium.copy(alpha = 0.2f),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Shield, contentDescription = null, tint = GoldPremium)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column {
+                        Text(notice.first, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(notice.second, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun EventCenterBanner() {
     Card(
@@ -411,7 +626,6 @@ fun EventCenterBanner() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    // Glossy Gift Icon
                     Box(
                         modifier = Modifier
                             .size(46.dp)
@@ -446,352 +660,12 @@ fun EventCenterBanner() {
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Voice Carnival Round 3 • Ends in 05h 22m",
+                            text = "Voice Carnival Round 3 • Active",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.9f)
                         )
                     }
                 }
-
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = GoldPremium,
-                    modifier = Modifier.clickable { /* Claim */ }
-                ) {
-                    Text(
-                        text = "Claim",
-                        color = Color.Black,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ----------------------------------------------------
-// Chat Conversation Tile
-// ----------------------------------------------------
-@Composable
-fun ChatConversationTile(
-    conversation: ChatConversation,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Profile Picture with 3D Border or System Icon
-        Box(
-            modifier = Modifier.size(52.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            if (conversation.isSystem) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .background(conversation.systemIconColor.copy(alpha = 0.18f))
-                        .border(1.5.dp, conversation.systemIconColor, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = conversation.systemIcon ?: Icons.Default.Notifications,
-                        contentDescription = conversation.name,
-                        tint = conversation.systemIconColor,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-            } else {
-                AsyncImage(
-                    model = conversation.avatarUrl,
-                    contentDescription = conversation.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .border(1.5.dp, if (conversation.vipLevel != null) GoldPremium else Color.Transparent, CircleShape)
-                )
-
-                // Online indicator
-                if (conversation.isOnline) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF00E676))
-                            .border(2.dp, MaterialTheme.colorScheme.background, CircleShape)
-                            .align(Alignment.BottomEnd)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.width(14.dp))
-
-        // Name, Last message preview, Timestamp, Distance, Unread badge
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = conversation.name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (conversation.vipLevel != null) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = GoldPremium
-                        ) {
-                            Text(
-                                text = "VIP ${conversation.vipLevel}",
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color.Black,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
-                }
-
-                Text(
-                    text = conversation.timestamp,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Spacer(modifier = Modifier.height(3.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = conversation.lastMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Distance Indicator
-                    Text(
-                        text = "📍 ${conversation.distance}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TealPremium,
-                        fontSize = 10.sp
-                    )
-
-                    // Unread Message Badge
-                    if (conversation.unreadCount > 0) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFFFF3366),
-                            modifier = Modifier.size(18.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = if (conversation.unreadCount > 99) "99+" else conversation.unreadCount.toString(),
-                                    color = Color.White,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ----------------------------------------------------
-// Interactive Chat Details Sheet
-// ----------------------------------------------------
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ChatDetailSheet(
-    conversation: ChatConversation,
-    onDismiss: () -> Unit
-) {
-    var messages by remember {
-        mutableStateOf(
-            listOf(
-                ChatMessage("m1", conversation.name, "Hey! How are you doing today?", "10:14 AM", false),
-                ChatMessage("m2", "Me", "Great! Just tuning in to the live broadcast.", "10:15 AM", true),
-                ChatMessage("m3", conversation.name, conversation.lastMessage, conversation.timestamp, false)
-            )
-        )
-    }
-    var typedText by remember { mutableStateOf("") }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.85f)
-                .padding(bottom = 20.dp)
-        ) {
-            // Chat Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (conversation.isSystem) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(conversation.systemIconColor.copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(conversation.systemIcon ?: Icons.Default.Info, contentDescription = null, tint = conversation.systemIconColor)
-                        }
-                    } else {
-                        AsyncImage(
-                            model = conversation.avatarUrl,
-                            contentDescription = conversation.name,
-                            modifier = Modifier.size(40.dp).clip(CircleShape)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(conversation.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(
-                            text = if (conversation.isOnline) "🟢 Online • ${conversation.distance}" else "Offline • ${conversation.distance}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (conversation.isOnline) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Call buttons
-                if (!conversation.isSystem) {
-                    Row {
-                        IconButton(onClick = { /* Audio Call */ }) {
-                            Icon(Icons.Default.Phone, contentDescription = "Call", tint = TealPremium)
-                        }
-                        IconButton(onClick = { /* Video Call */ }) {
-                            Icon(Icons.Default.Videocam, contentDescription = "Video", tint = TealPremium)
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider()
-
-            // Chat Messages History
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                reverseLayout = true
-            ) {
-                items(messages.reversed(), key = { it.id }) { msg ->
-                    ChatBubble(msg)
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-
-            // Input Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = typedText,
-                    onValueChange = { typedText = it },
-                    placeholder = { Text("Write a message...") },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(24.dp),
-                    singleLine = true,
-                    leadingIcon = {
-                        IconButton(onClick = { typedText += " ❤️" }) {
-                            Text("😊", fontSize = 18.sp)
-                        }
-                    },
-                    trailingIcon = {
-                        if (typedText.isNotBlank()) {
-                            IconButton(onClick = {
-                                messages = messages + ChatMessage(
-                                    id = "msg_${System.currentTimeMillis()}",
-                                    senderName = "Me",
-                                    text = typedText,
-                                    timestamp = "Just now",
-                                    isFromMe = true
-                                )
-                                typedText = ""
-                            }) {
-                                Icon(Icons.Default.Send, contentDescription = "Send", tint = TealPremium)
-                            }
-                        }
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ChatBubble(msg: ChatMessage) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (msg.isFromMe) Arrangement.End else Arrangement.Start
-    ) {
-        Surface(
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (msg.isFromMe) 16.dp else 4.dp,
-                bottomEnd = if (msg.isFromMe) 4.dp else 16.dp
-            ),
-            color = if (msg.isFromMe) TealPremium else MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.widthIn(max = 280.dp)
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(
-                    text = msg.text,
-                    color = if (msg.isFromMe) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = msg.timestamp,
-                    color = if (msg.isFromMe) Color.Black.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    fontSize = 9.sp,
-                    modifier = Modifier.align(Alignment.End)
-                )
             }
         }
     }

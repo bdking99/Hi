@@ -12,10 +12,51 @@ data class SeatData(
     val isLocked: Boolean = false,
     val vipLevel: Int = 0,
     val seatEarnings: Long = 0L,        // Track how many coins this specific seat earned this session
-    val isHost: Boolean = false         // Differentiate the main host from co-hosts/guests
+    val isHost: Boolean = false,        // Differentiate the main host from co-hosts/guests
+    val isCoHost: Boolean = false       // Co-host assigned by room host
 )
 
-// 💬 CHAT MESSAGE - Added rich message types, replies, and VIP chat bubbles
+// 👥 ROOM MEMBER - Stored in Firestore `rooms/{roomId}/members/{uid}`
+data class RoomMember(
+    val uid: String = "",
+    val roomId: String = "",
+    val displayName: String = "",
+    val avatarUrl: String = "",
+    val role: String = "AUDIENCE", // "HOST", "CO_HOST", "SPEAKER", "AUDIENCE"
+    val seatIndex: Int? = null,
+    val isMuted: Boolean = false,
+    val isSpeaking: Boolean = false,
+    val joinedAt: Long = System.currentTimeMillis()
+)
+
+// ✋ SPEAKER REQUEST - Stored in Firestore `rooms/{roomId}/speakerRequests/{uid}`
+data class SpeakerRequest(
+    val id: String = "",
+    val roomId: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val userAvatar: String = "",
+    val userLevel: Int = 1,
+    val status: String = "PENDING", // "PENDING", "APPROVED", "REJECTED"
+    val targetSeatIndex: Int = -1,
+    val requestedAt: Long = System.currentTimeMillis()
+)
+
+// 📡 ROOM RTC SIGNAL - Stored in Firestore `rooms/{roomId}/signals/{signalId}`
+data class RoomRtcSignal(
+    val id: String = "",
+    val roomId: String = "",
+    val senderUid: String = "",
+    val receiverUid: String = "",
+    val type: String = "OFFER", // "OFFER", "ANSWER", "ICE_CANDIDATE"
+    val sdp: String = "",
+    val iceCandidateMid: String? = null,
+    val iceCandidateIndex: Int? = null,
+    val iceCandidateSdp: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+// 💬 CHAT MESSAGE - Added rich message types, replies, VIP chat bubbles, and VIP/Level badges
 data class ChatMessage(
     val id: String = "",
     val roomId: String = "",
@@ -25,6 +66,9 @@ data class ChatMessage(
     val text: String = "",
     val type: MessageType = MessageType.TEXT, // TEXT, GIFT, SYSTEM, ENTRY
     val chatBubbleUrl: String? = null,        // Custom background for VIP chat bubbles
+    val vipLevel: Int = 0,
+    val svipLevel: Int = 0,
+    val userLevel: Int = 1,
     val replyToMessageId: String? = null,     // Threading support
     val isSystem: Boolean = false,
     val isSystemMessage: Boolean = false,
@@ -77,15 +121,22 @@ data class GiftTransaction(
     val timestamp: Long = System.currentTimeMillis()
 )
 
-// 👤 USER PROFILE - Added agencies, entry animations, and privacy controls
+// 👤 USER PROFILE - Added agencies, entry animations, permanent public ID, frames, and privacy controls
 data class FirebaseUserProfile(
     val userId: String = "",
     val publicUserId: String = "",
     val displayName: String = "",
     val username: String = "",
+    val email: String = "",
+    val phone: String? = null,
     val avatar: String = "",
     val coverImage: String = "",
-    val bio: String = "",
+    val profileFrameId: String = "frame_default",
+    val bio: String = "Voice Room VIP Member 🎙️✨",
+    val country: String = "Global",
+    val gender: String = "Not specified",
+    val accountStatus: String = "ACTIVE",
+    val createdAt: Long = System.currentTimeMillis(),
     
     // Core Progression
     val level: Int = 1,
@@ -109,13 +160,71 @@ data class FirebaseUserProfile(
     val avatarFrameUrl: String = "",
     val roomEntryEffectUrl: String = "", // Animation played when user enters a room
     
-    // Status
-    val isOnline: Boolean = true,
+    // Status & Moderation
+    val role: String = "USER", // USER, MODERATOR, SENIOR_MODERATOR, ADMIN, SUPER_ADMIN
+    val isPrivateAccount: Boolean = false,
+    val moderationStatus: String = "NORMAL", // NORMAL, WARNED, RESTRICTED
+    val restrictedUntil: Long? = null,
+    val suspendedUntil: Long? = null,
+    val isMuted: Boolean = false,
+    val mutedUntil: Long? = null,
+    val isOnline: Boolean = false,
     val invisibleMode: Boolean = false,  // VIP feature to hide online/entry status
+    val callPrivacy: String = "Everyone", // "Everyone", "Friends", "Nobody"
     val lastActive: Long = System.currentTimeMillis()
 ) {
+    val uid: String get() = userId
     val earnings: Long get() = if (diamondBalance > 0) diamondBalance else receivedDiamonds
+
+    val isSuspended: Boolean get() {
+        if (accountStatus == "SUSPENDED" || accountStatus == "BANNED") {
+            val until = suspendedUntil
+            return until == null || until > System.currentTimeMillis()
+        }
+        return false
+    }
+
+    val isRestricted: Boolean get() {
+        if (moderationStatus == "RESTRICTED") {
+            val until = restrictedUntil
+            return until == null || until > System.currentTimeMillis()
+        }
+        return false
+    }
+
+    val isCurrentlyMuted: Boolean get() {
+        if (isMuted) {
+            val until = mutedUntil
+            return until == null || until > System.currentTimeMillis()
+        }
+        return false
+    }
 }
+
+// 👑 PROFILE FRAME - Stored in Firestore collection `frames`
+data class ProfileFrame(
+    val id: String = "",
+    val name: String = "",
+    val imageUrl: String = "",
+    val type: String = "VIP",         // "VIP", "EVENT", "LUXURY", "DEFAULT"
+    val rarity: String = "Common",    // "Common", "Rare", "Epic", "Legendary"
+    val glowColorHex: Long = 0xFFFFD700,
+    val secondaryColorHex: Long = 0xFFFFA000,
+    val isActive: Boolean = true,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+// 🚩 USER REPORT - Stored in Firestore collection `reports`
+data class UserReport(
+    val id: String = "",
+    val reporterUid: String = "",
+    val reportedUid: String = "",
+    val reportedPublicId: String = "",
+    val reason: String = "",
+    val details: String = "",
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 // 💳 WALLET TRANSACTION - Added status, reference mapping, and balances
 data class CoinTransactionItem(

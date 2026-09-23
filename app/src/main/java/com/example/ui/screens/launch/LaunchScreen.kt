@@ -268,10 +268,10 @@ fun LaunchScreen(
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Version 1.0.1 (Build 3)",
+                text = "Version 1.0.2 (Build 4) • GreatVoiceRoom",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = GoldPremium.copy(alpha = 0.7f)
+                color = GoldPremium.copy(alpha = 0.85f)
             )
         }
     }

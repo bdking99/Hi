@@ -12,49 +12,353 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token != null && request.auth.token.admin == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         getUserData().role in ['ADMIN', 'SUPER_ADMIN', 'OWNER', 'MODERATOR'])
+      );
+    }
+
+    function isSuperAdminOrOwner() {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getUserData().role in ['SUPER_ADMIN', 'OWNER']
+      );
+    }
+
     // User profiles: authenticated users can read public profile data.
-    // Users can only write/update their own profile documents.
+    // Users can create and edit their profile.
+    // CRITICAL: Prevent self-promotion to ADMIN/OWNER by regular users.
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        (!request.resource.data.keys().hasAny(['role']) || request.resource.data.role in ['USER', 'GUEST', 'MEMBER']);
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (isOwner(userId) && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isBanned', 'isMuted', 'bannedUntil', 'mutedUntil'])
+        ))
+      );
+      allow delete: if isSuperAdminOrOwner();
 
-      // Sub-collections under user (e.g. personal transactions, notifications)
+      // Sub-collections under user (e.g. personal transactions, blocks, gameStats)
       match /transactions/{transactionId} {
-        allow read: if isOwner(userId);
-        allow write: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isAuthenticated();
+      }
+
+      match /blocks/{blockedUserId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /gameStats/{gameId} {
+        allow read: if isAuthenticated();
+        allow write: if isOwner(userId) || isAdmin();
       }
     }
 
-    // Active voice rooms: authenticated users can read rooms and participate.
-    // Host / members can write updates to room seats, state, and messages.
-    match /active_voice_rooms/{roomId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated();
-      allow delete: if isAuthenticated() && resource.data.hostId == request.auth.uid;
-
-      // Real-time chat messages in room
-      match /messages/{messageId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
-      }
-
-      // Gifts sent in room
-      match /gifts/{giftId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
-      }
-    }
-
-    // Gift transactions history
-    match /gift_transactions/{transactionId} {
+    // Permanent numeric Public User IDs mapping (e.g. 1000001 -> UID)
+    match /public_ids/{publicId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
+      allow update, delete: if false; // Permanent and immutable
     }
 
-    // System configurations and public reference data
+    // Atomic system counters (e.g. public_user_id counter sequence)
+    match /system_counters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Direct Messages & Conversations
+    match /conversations/{conversationId} {
+      allow read, write: if isAuthenticated();
+
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // User Blocks & Safety
+    match /blocks/{blockId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Direct 1-on-1 Voice Calls & WebRTC Signaling
+    match /calls/{callId} {
+      allow read, write: if isAuthenticated();
+
+      match /caller_candidates/{candidateId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      match /receiver_candidates/{candidateId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // VIP and Event Profile Frames collection
+    match /frames/{frameId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /profileFrames/{frameId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /userFrames/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+
+      match /owned/{frameId} {
+        allow read: if isAuthenticated();
+        allow write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Social follow relationships: follows/{followerUid_followedUid}
+    match /follows/{followId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Community Reports & Moderation
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // Group Voice Rooms Collection: rooms/{roomId}
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+
+      // Members subcollection: rooms/{roomId}/members/{memberId}
+      match /members/{memberId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // Speaker Requests subcollection: rooms/{roomId}/speakerRequests/{requestId}
+      match /speakerRequests/{requestId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // Real-time room chat messages
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // WebRTC Audio Signaling for Group Voice Room
+      match /signals/{signalId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // Entry events for VIP animation banners
+      match /entryEvents/{eventId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // Unique numeric room IDs registry (e.g. 739281 -> roomId)
+    match /room_ids/{numericId} {
+      allow read, create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // Active voice rooms (backward compatibility)
+    match /active_voice_rooms/{roomId} {
+      allow read, write: if isAuthenticated();
+
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      match /gifts/{giftId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // Gift items catalog & transactions history
+    match /gifts/{giftId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /giftTransactions/{transactionId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /gift_transactions/{transactionId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // 🪙 Wallets and financial balances
+    match /wallets/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAuthenticated();
+    }
+
+    match /walletTransactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // 🇧🇩 COIN PURCHASE REQUESTS (Bangla Payment Gateway)
+    match /coinPurchaseRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uid == request.auth.uid || isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.status == 'PENDING';
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 💸 HOST CASHOUT WITHDRAWAL REQUESTS
+    match /withdrawalRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uid == request.auth.uid || isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.status == 'PENDING';
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 📦 COIN PACKAGES CATALOG
+    match /coinPackages/{packageId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // 🔄 COIN EXCHANGE REQUESTS
+    match /coinExchangeRequests/{exchangeId} {
+      allow read: if isAuthenticated() && (
+        resource.data.uid == request.auth.uid || isAdmin()
+      );
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // VIP & SVIP user levels, XP, configs and benefits
+    match /vipLevels/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /vip_levels/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // User Level Progression (EXP & Level state)
+    match /userLevels/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /user_levels/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /levelConfigs/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vip_configurations/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vipHistory/{historyId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    match /vip_history/{historyId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    match /levelUpRewards/{rewardId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /xpEvents/{eventId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Mini-Games: Game Catalog, Configurations, Sessions, Rounds, History, Leaderboard, Invites
+    match /games/{gameId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /gameConfigurations/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /gameSessions/{sessionId} {
+      allow read, write: if isAuthenticated();
+
+      match /members/{memberId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      match /rounds/{roundId} {
+        allow read, write: if isAuthenticated();
+
+        match /bets/{betId} {
+          allow read, write: if isAuthenticated();
+        }
+      }
+    }
+
+    match /game_rounds/{roundId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /gameHistory/{historyId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /leaderboards/{leaderboardId} {
+      allow read, write: if isAuthenticated();
+
+      match /players/{playerId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    match /gameEvents/{eventId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /gameInvitations/{inviteId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // System configurations and payment gateway numbers
     match /system_settings/{settingId} {
       allow read: if isAuthenticated();
-      allow write: if false; // Read-only for clients
+      allow write: if isAdmin();
     }
   }
 }

@@ -9,6 +9,11 @@ object Routes {
     const val ForgotPassword = "forgot_password"
     const val Main = "main"
     const val Wallet = "wallet"
+    const val VipCenter = "vip_center"
+    const val Notifications = "notifications"
+    const val NotificationSettings = "notification_settings"
+    const val ModerationDashboard = "moderation_dashboard"
+    const val AdminPanel = "admin_panel"
 }
 
 object Tabs {

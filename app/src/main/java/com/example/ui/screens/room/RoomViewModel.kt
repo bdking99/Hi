@@ -16,7 +16,22 @@ class RoomViewModel(
     private val userRepository: UserRepository? = null
 ) : ViewModel() {
 
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
     val activeRooms: StateFlow<List<RoomData>> = roomRepository.getActiveVoiceRooms()
+        .combine(_searchQuery) { rooms, query ->
+            if (query.isBlank()) rooms
+            else {
+                val q = query.trim().lowercase()
+                rooms.filter { r ->
+                    r.numericId.contains(q) ||
+                    r.title.lowercase().contains(q) ||
+                    r.tag.lowercase().contains(q) ||
+                    r.hostName.lowercase().contains(q)
+                }
+            }
+        }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -24,11 +39,22 @@ class RoomViewModel(
         )
 
     private val _currentRoomId = MutableStateFlow<String?>(null)
+    val currentRoomId: StateFlow<String?> = _currentRoomId.asStateFlow()
 
     val currentRoom: StateFlow<RoomData?> = _currentRoomId.flatMapLatest { roomId ->
         if (roomId == null) flowOf(null)
         else roomRepository.getRoomStream(roomId)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val roomMembers: StateFlow<List<RoomMember>> = _currentRoomId.flatMapLatest { roomId ->
+        if (roomId == null) flowOf(emptyList())
+        else roomRepository.getRoomMembers(roomId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val speakerRequests: StateFlow<List<SpeakerRequest>> = _currentRoomId.flatMapLatest { roomId ->
+        if (roomId == null) flowOf(emptyList())
+        else roomRepository.getSpeakerRequests(roomId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val roomChat: StateFlow<List<ChatMessage>> = _currentRoomId.flatMapLatest { roomId ->
         if (roomId == null) flowOf(emptyList())
@@ -39,6 +65,18 @@ class RoomViewModel(
         if (roomId == null) flowOf(null)
         else roomRepository.getLatestRoomGiftStream(roomId)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // Voice Room WebRTC audio state
+    private val _isMicrophoneMuted = MutableStateFlow(false)
+    val isMicrophoneMuted: StateFlow<Boolean> = _isMicrophoneMuted.asStateFlow()
+
+    private val _isSpeakingLocally = MutableStateFlow(false)
+    val isSpeakingLocally: StateFlow<Boolean> = _isSpeakingLocally.asStateFlow()
+
+    private val _speakingPeers = MutableStateFlow<Set<String>>(emptySet())
+    val speakingPeers: StateFlow<Set<String>> = _speakingPeers.asStateFlow()
+
+    private var voiceRoomManager: com.example.data.webrtc.WebRTCConnectionManager? = null
 
     private val _currentUserProfile = MutableStateFlow(
         FirebaseUserProfile(
@@ -116,11 +154,97 @@ class RoomViewModel(
         }
     }
 
-    fun selectRoom(roomId: String) {
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun initializeVoiceRoomAudio(context: android.content.Context, roomId: String) {
+        try {
+            voiceRoomManager?.close()
+            val user = _currentUserProfile.value
+            val manager = com.example.data.webrtc.WebRTCConnectionManager(
+                context = context.applicationContext,
+                myUserId = user.userId,
+                onSendSignal = { signal ->
+                    roomRepository.sendRoomRtcSignal(roomId, signal)
+                }
+            )
+            voiceRoomManager = manager
+
+            // Start audio engine
+            val isHost = currentRoom.value?.hostId == user.userId
+            val isSeated = currentRoom.value?.seats?.any { it.userId == user.userId } == true
+            manager.startAudio(roomId, asSpeaker = isHost || isSeated)
+
+            // Collect mic states
+            viewModelScope.launch {
+                manager.isMicrophoneMuted.collect { muted ->
+                    _isMicrophoneMuted.value = muted
+                }
+            }
+            viewModelScope.launch {
+                manager.isSpeakingLocally.collect { speaking ->
+                    _isSpeakingLocally.value = speaking
+                }
+            }
+            viewModelScope.launch {
+                manager.speakingPeers.collect { peers ->
+                    _speakingPeers.value = peers
+                }
+            }
+
+            // Sync room speakers dynamically when seats or host change
+            viewModelScope.launch {
+                currentRoom.collect { room ->
+                    if (room != null) {
+                        val speakerIds = mutableListOf<String>()
+                        if (room.hostId.isNotBlank()) speakerIds.add(room.hostId)
+                        room.seats.mapNotNull { it.userId }.forEach { uid ->
+                            if (!speakerIds.contains(uid)) speakerIds.add(uid)
+                        }
+                        manager.syncRoomSpeakers(speakerIds)
+                    }
+                }
+            }
+
+            // Listen to incoming WebRTC signals
+            viewModelScope.launch {
+                roomRepository.getRoomRtcSignals(roomId, user.userId).collect { signal ->
+                    if (signal != null) {
+                        manager.handleIncomingSignal(signal)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun selectRoom(roomId: String, context: android.content.Context? = null) {
         _currentRoomId.value = roomId
+        val user = _currentUserProfile.value
+        viewModelScope.launch {
+            roomRepository.joinRoomMember(roomId, user)
+        }
+        if (context != null) {
+            initializeVoiceRoomAudio(context, roomId)
+        }
     }
 
     fun closeCurrentRoom() {
+        val roomId = _currentRoomId.value
+        val userId = _currentUserProfile.value.userId
+        if (roomId != null) {
+            viewModelScope.launch {
+                roomRepository.leaveRoomMember(roomId, userId)
+            }
+        }
+        try {
+            voiceRoomManager?.close()
+            voiceRoomManager = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         _currentRoomId.value = null
     }
 
@@ -128,7 +252,7 @@ class RoomViewModel(
         viewModelScope.launch {
             roomRepository.deleteRoom(roomId)
             if (_currentRoomId.value == roomId) {
-                _currentRoomId.value = null
+                closeCurrentRoom()
             }
             _uiNotice.value = "Room deleted successfully."
             onDeleted()
@@ -143,6 +267,9 @@ class RoomViewModel(
         title: String,
         description: String,
         category: String,
+        coverUrl: String = "",
+        password: String = "",
+        roomType: RoomType = RoomType.PUBLIC,
         onCreated: (String) -> Unit
     ) {
         viewModelScope.launch {
@@ -150,7 +277,10 @@ class RoomViewModel(
                 title = title,
                 description = description,
                 category = category,
-                hostUser = _currentUserProfile.value
+                hostUser = _currentUserProfile.value,
+                coverUrl = coverUrl,
+                password = password,
+                roomType = roomType
             )
             res.onSuccess { roomId ->
                 _currentRoomId.value = roomId
@@ -166,6 +296,7 @@ class RoomViewModel(
         viewModelScope.launch {
             val res = roomRepository.takeSeat(roomId, seatIndex, _currentUserProfile.value)
             res.onSuccess {
+                voiceRoomManager?.activateSpeakerMicrophone()
                 _uiNotice.value = "You took Seat ${seatIndex + 1}! 🎙️ Speak away!"
             }.onFailure { err ->
                 _uiNotice.value = err.message ?: "Could not take seat"
@@ -177,6 +308,7 @@ class RoomViewModel(
         viewModelScope.launch {
             val res = roomRepository.leaveSeat(roomId, seatIndex, _currentUserProfile.value.userId)
             res.onSuccess {
+                voiceRoomManager?.deactivateSpeakerMicrophone()
                 _uiNotice.value = "Left the seat"
             }.onFailure { err ->
                 _uiNotice.value = err.message
@@ -187,6 +319,7 @@ class RoomViewModel(
     fun toggleMicMute(roomId: String, seatIndex: Int, isMuted: Boolean) {
         viewModelScope.launch {
             roomRepository.toggleMicMute(roomId, seatIndex, isMuted)
+            voiceRoomManager?.setMicrophoneMuted(isMuted)
         }
     }
 
@@ -195,6 +328,80 @@ class RoomViewModel(
             val res = roomRepository.hostControlSeat(roomId, seatIndex, kick, mute)
             res.onSuccess {
                 _uiNotice.value = if (kick) "Speaker removed from seat" else "Speaker microphone muted"
+            }
+        }
+    }
+
+    fun requestToSpeak(roomId: String, targetSeatIndex: Int = -1) {
+        viewModelScope.launch {
+            val res = roomRepository.requestToSpeak(roomId, _currentUserProfile.value, targetSeatIndex)
+            res.onSuccess {
+                _uiNotice.value = "Speaking request sent to host! ✋"
+            }.onFailure { err ->
+                _uiNotice.value = err.message ?: "Failed to request"
+            }
+        }
+    }
+
+    fun cancelSpeakerRequest(roomId: String) {
+        viewModelScope.launch {
+            roomRepository.cancelSpeakerRequest(roomId, _currentUserProfile.value.userId)
+            _uiNotice.value = "Speaking request cancelled."
+        }
+    }
+
+    fun approveSpeakerRequest(roomId: String, request: SpeakerRequest) {
+        viewModelScope.launch {
+            val res = roomRepository.approveSpeakerRequest(roomId, request)
+            res.onSuccess {
+                _uiNotice.value = "Approved ${request.userName} to speak! 🎤"
+            }
+        }
+    }
+
+    fun rejectSpeakerRequest(roomId: String, userId: String) {
+        viewModelScope.launch {
+            roomRepository.rejectSpeakerRequest(roomId, userId)
+            _uiNotice.value = "Declined speaking request."
+        }
+    }
+
+    fun assignCoHost(roomId: String, targetUserId: String, isCoHost: Boolean) {
+        viewModelScope.launch {
+            val res = roomRepository.assignCoHost(roomId, targetUserId, isCoHost)
+            res.onSuccess {
+                _uiNotice.value = if (isCoHost) "Promoted to Co-Host! 👑" else "Removed Co-Host role."
+            }
+        }
+    }
+
+    fun removeSpeaker(roomId: String, seatIndex: Int) {
+        hostControlSeat(roomId, seatIndex, kick = true, mute = false)
+    }
+
+    fun lockSeat(roomId: String, seatIndex: Int, isLocked: Boolean) {
+        viewModelScope.launch {
+            val res = roomRepository.lockSeat(roomId, seatIndex, isLocked)
+            res.onSuccess {
+                _uiNotice.value = if (isLocked) "Seat ${seatIndex + 1} locked 🔒" else "Seat ${seatIndex + 1} unlocked 🔓"
+            }
+        }
+    }
+
+    fun muteAllSeats(roomId: String, isAllMuted: Boolean) {
+        viewModelScope.launch {
+            val res = roomRepository.muteAllSeats(roomId, isAllMuted)
+            res.onSuccess {
+                _uiNotice.value = if (isAllMuted) "All speakers muted 🔇" else "All speakers unmuted 🎙️"
+            }
+        }
+    }
+
+    fun setRoomLock(roomId: String, isLocked: Boolean, password: String = "") {
+        viewModelScope.launch {
+            val res = roomRepository.setRoomLock(roomId, isLocked, password)
+            res.onSuccess {
+                _uiNotice.value = if (isLocked) "Room locked 🔒" else "Room unlocked 🔓"
             }
         }
     }
@@ -209,6 +416,9 @@ class RoomViewModel(
                 senderId = user.userId,
                 senderName = user.displayName,
                 senderAvatar = user.avatar,
+                vipLevel = user.vipLevel,
+                svipLevel = if (user.vipLevel >= 8) user.vipLevel - 7 else 0,
+                userLevel = user.level.coerceAtLeast(1),
                 text = text.trim(),
                 isSystem = false
             )

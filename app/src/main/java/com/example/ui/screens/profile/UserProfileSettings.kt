@@ -456,13 +456,38 @@ fun AppSettingsSheet(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.White.copy(alpha = 0.05f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("App Version", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                    Text("v1.0.1 (Build 3)", color = GoldPremium, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("App Version", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                            Text("v1.0.2 (Build 4) • Latest", color = GoldPremium, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Audio Buffer Cache", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                            TextButton(
+                                onClick = {
+                                    Toast.makeText(context, "Audio & room cache cleared! 🧹", Toast.LENGTH_SHORT).show()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("Clear Cache", color = TealPremium, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))

@@ -539,18 +539,36 @@ fun SendGiftDialog(
 
 /**
  * Real Room Creation Dialog:
- * Allows user to create their own party voice room with title, category, and description.
+ * Allows user to create their own party voice room with title, category, description,
+ * cover selection, and optional room lock password.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateRoomDialog(
     onDismiss: () -> Unit,
-    onCreate: (title: String, category: String, description: String) -> Unit
+    onCreate: (
+        title: String,
+        category: String,
+        description: String,
+        coverUrl: String,
+        password: String,
+        roomType: com.example.data.model.RoomType
+    ) -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("Chat") }
     var description by remember { mutableStateOf("") }
+    var isPrivate by remember { mutableStateOf(false) }
+    var password by remember { mutableStateOf("") }
     val categories = listOf("Chat", "Music", "Singing", "Gaming", "Party", "Chill")
+
+    val curatedCovers = listOf(
+        "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=600",
+        "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600",
+        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600",
+        "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600"
+    )
+    var selectedCover by remember { mutableStateOf(curatedCovers[0]) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -569,6 +587,7 @@ fun CreateRoomDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(20.dp)
             ) {
                 Row(
@@ -591,13 +610,13 @@ fun CreateRoomDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Title Input
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text("Room Title") },
+                    label = { Text("Room Name") },
                     placeholder = { Text("e.g. Acoustic & Late Night Chill") },
                     singleLine = true,
                     modifier = Modifier
@@ -613,6 +632,35 @@ fun CreateRoomDialog(
                         unfocusedTextColor = Color.White
                     )
                 )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Cover Photo Selection
+                Text("Room Cover Theme", color = TealPremium, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(curatedCovers) { cover ->
+                        val isSelected = selectedCover == cover
+                        Box(
+                            modifier = Modifier
+                                .size(width = 72.dp, height = 50.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) GoldPremium else Color.White.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable { selectedCover = cover }
+                        ) {
+                            AsyncImage(
+                                model = cover,
+                                contentDescription = "Cover option",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -662,11 +710,78 @@ fun CreateRoomDialog(
                     )
                 )
 
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Password / Lock toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.05f))
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (isPrivate) "🔒" else "🌐", fontSize = 18.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = if (isPrivate) "Password Protected Room" else "Public Room",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = if (isPrivate) "Only users with password can join" else "Anyone can discover & enter",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = isPrivate,
+                        onCheckedChange = { isPrivate = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = TealPremium
+                        )
+                    )
+                }
+
+                if (isPrivate) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Room Password") },
+                        placeholder = { Text("4-digit code or phrase") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GoldPremium,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedLabelColor = GoldPremium,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(20.dp))
 
                 Button(
                     onClick = {
-                        onCreate(title.ifBlank { "Party Voice Club" }, selectedCategory, description)
+                        val finalTitle = title.ifBlank { "Late Night Vibes" }
+                        onCreate(
+                            finalTitle,
+                            selectedCategory,
+                            description,
+                            selectedCover,
+                            password,
+                            if (isPrivate) com.example.data.model.RoomType.PRIVATE else com.example.data.model.RoomType.PUBLIC
+                        )
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -685,4 +800,369 @@ fun CreateRoomDialog(
             }
         }
     }
+}
+
+/**
+ * Speaker Requests Management Dialog for Host and Co-Hosts:
+ * Allows accepting/rejecting audience speaking requests with real-time seat assignment.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SpeakerRequestsDialog(
+    requests: List<com.example.data.model.SpeakerRequest>,
+    onDismiss: () -> Unit,
+    onApprove: (com.example.data.model.SpeakerRequest) -> Unit,
+    onReject: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF19162B),
+            border = BorderStroke(1.dp, GoldPremium.copy(alpha = 0.5f))
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("✋", fontSize = 22.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Speaking Requests (${requests.size})",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White.copy(alpha = 0.7f))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (requests.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No pending speaker requests",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 14.sp
+                        )
+                    }
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 300.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(requests) { req ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.05f))
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    AsyncImage(
+                                        model = req.userAvatar,
+                                        contentDescription = req.userName,
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = req.userName,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            text = "Wants to speak",
+                                            color = TealPremium,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Button(
+                                        onClick = { onApprove(req) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = TealPremium),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        Text("Approve", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                    IconButton(
+                                        onClick = { onReject(req.userId) },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Decline", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Seat Action Dialog:
+ * Moderator controls (Mute, Kick, Lock seat) or User interactions (View profile, Gift).
+ */
+@Composable
+fun SeatActionDialog(
+    seatIndex: Int,
+    seat: com.example.data.model.SeatData,
+    isHostOrCoHost: Boolean,
+    onDismiss: () -> Unit,
+    onViewProfile: (String) -> Unit,
+    onMuteSpeaker: () -> Unit,
+    onKickSpeaker: () -> Unit,
+    onToggleLockSeat: () -> Unit,
+    onSendGift: (String, String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Seat ${seatIndex + 1} Settings",
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (seat.userId != null) {
+                    Text(
+                        text = "Occupied by: ${seat.userName ?: "Speaker"}",
+                        color = GoldPremium,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                    Divider(color = Color.White.copy(alpha = 0.1f))
+
+                    // View profile
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onViewProfile(seat.userId!!)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("View Profile")
+                    }
+
+                    // Send gift
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onSendGift(seat.userId!!, seat.userName ?: "Speaker")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🎁")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Send Gift")
+                    }
+
+                    if (isHostOrCoHost) {
+                        // Mute/unmute
+                        Button(
+                            onClick = {
+                                onMuteSpeaker()
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (seat.isMuted) TealPremium else Color(0xFFFF9800)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(if (seat.isMuted) Icons.Default.Mic else Icons.Default.MicOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (seat.isMuted) "Unmute Speaker" else "Mute Speaker")
+                        }
+
+                        // Kick from seat
+                        Button(
+                            onClick = {
+                                onKickSpeaker()
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.RemoveCircleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Remove from Seat")
+                        }
+                    }
+                } else {
+                    Text(
+                        text = if (seat.isLocked) "This seat is currently LOCKED 🔒" else "This seat is EMPTY 🎙️",
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                }
+
+                if (isHostOrCoHost) {
+                    Divider(color = Color.White.copy(alpha = 0.1f))
+                    // Lock / Unlock seat
+                    OutlinedButton(
+                        onClick = {
+                            onToggleLockSeat()
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(if (seat.isLocked) Icons.Default.LockOpen else Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (seat.isLocked) "Unlock Seat" else "Lock Seat")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = Color.White.copy(alpha = 0.7f))
+            }
+        },
+        containerColor = Color(0xFF1E1A33),
+        shape = RoundedCornerShape(20.dp)
+    )
+}
+
+/**
+ * Room Moderation Sheet:
+ * Provides Host / Co-Host controls: Mute All, Unmute All, Lock Room, Password Setting.
+ */
+@Composable
+fun RoomModerationDialog(
+    isRoomLocked: Boolean,
+    onDismiss: () -> Unit,
+    onMuteAll: () -> Unit,
+    onUnmuteAll: () -> Unit,
+    onToggleLock: (Boolean, String) -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    var showPasswordInput by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🛡️", fontSize = 22.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Room Host Controls", fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Speaker Stage Controls", color = TealPremium, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            onMuteAll()
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Mute All 🔇", fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            onUnmuteAll()
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPremium),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Unmute All 🎙️", color = Color.Black, fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Divider(color = Color.White.copy(alpha = 0.1f))
+
+                Text("Room Access & Security", color = GoldPremium, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+                Button(
+                    onClick = {
+                        if (isRoomLocked) {
+                            onToggleLock(false, "")
+                            onDismiss()
+                        } else {
+                            showPasswordInput = !showPasswordInput
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRoomLocked) Color(0xFF4CAF50) else Color(0xFF673AB7)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isRoomLocked) "Unlock Room 🔓" else "Lock Room with Password 🔒")
+                }
+
+                if (showPasswordInput && !isRoomLocked) {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = { Text("Set entry password") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                onToggleLock(true, password)
+                                onDismiss()
+                            }) {
+                                Icon(Icons.Default.Check, contentDescription = "Save", tint = TealPremium)
+                            }
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = Color.White.copy(alpha = 0.7f))
+            }
+        },
+        containerColor = Color(0xFF1D1832),
+        shape = RoundedCornerShape(20.dp)
+    )
 }

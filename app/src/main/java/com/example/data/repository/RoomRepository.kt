@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class RoomRepository {
     private val collectionPath = "active_voice_rooms"
+    private val roomsCollectionPath = "rooms"
     private val usersCollectionPath = "users"
     private val transactionsCollectionPath = "gift_transactions"
 
@@ -27,6 +28,9 @@ class RoomRepository {
     private val _roomDetailMap = ConcurrentHashMap<String, MutableStateFlow<RoomData?>>()
     private val _roomChatMap = ConcurrentHashMap<String, MutableStateFlow<List<ChatMessage>>>()
     private val _roomGiftMap = ConcurrentHashMap<String, MutableStateFlow<GiftTransaction?>>()
+    private val _roomMembersMap = ConcurrentHashMap<String, MutableStateFlow<List<RoomMember>>>()
+    private val _speakerRequestsMap = ConcurrentHashMap<String, MutableStateFlow<List<SpeakerRequest>>>()
+    private val _roomSignalsMap = ConcurrentHashMap<String, MutableStateFlow<RoomRtcSignal?>>()
     private val _userProfilesMap = ConcurrentHashMap<String, MutableStateFlow<FirebaseUserProfile?>>()
     private val _userTransactionsMap = ConcurrentHashMap<String, MutableStateFlow<List<CoinTransactionItem>>>()
     private val _userReceivedGiftsMap = ConcurrentHashMap<String, MutableStateFlow<List<GiftTransaction>>>()
@@ -39,6 +43,20 @@ class RoomRepository {
             _roomDetailMap[room.id] = MutableStateFlow(room)
             _roomChatMap[room.id] = MutableStateFlow(getFallbackChat(room.id))
             _roomGiftMap[room.id] = MutableStateFlow(null)
+            _roomMembersMap[room.id] = MutableStateFlow(
+                listOf(
+                    RoomMember(
+                        uid = room.hostId,
+                        roomId = room.id,
+                        displayName = room.hostName,
+                        avatarUrl = room.hostAvatar,
+                        role = "HOST",
+                        seatIndex = 0
+                    )
+                )
+            )
+            _speakerRequestsMap[room.id] = MutableStateFlow(emptyList())
+            _roomSignalsMap[room.id] = MutableStateFlow(null)
         }
 
         // Initialize sample user profiles
@@ -79,10 +97,10 @@ class RoomRepository {
     private fun listenToFirestoreRooms() {
         val firestore = getFirestore() ?: return
         try {
-            firestore.collection(collectionPath)
+            // Listen to rooms collection
+            firestore.collection(roomsCollectionPath)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        // Keep using in-memory state on error
                         return@addSnapshotListener
                     }
                     if (snapshot != null && !snapshot.isEmpty) {
@@ -95,13 +113,58 @@ class RoomRepository {
                             }
                         }
                     } else {
-                        // Seed Firestore in background
+                        // Fallback to active_voice_rooms
+                        listenToLegacyRooms(firestore)
+                    }
+                }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun listenToLegacyRooms(firestore: FirebaseFirestore) {
+        try {
+            firestore.collection(collectionPath)
+                .addSnapshotListener { snapshot, error ->
+                    if (error == null && snapshot != null && !snapshot.isEmpty) {
+                        val firestoreRooms = snapshot.toObjects(RoomData::class.java)
+                        if (firestoreRooms.isNotEmpty()) {
+                            _roomsState.value = firestoreRooms
+                            for (r in firestoreRooms) {
+                                val flow = _roomDetailMap.getOrPut(r.id) { MutableStateFlow(r) }
+                                flow.value = r
+                            }
+                        }
+                    } else if (snapshot == null || snapshot.isEmpty) {
                         seedInitialRooms(firestore)
                     }
                 }
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    /**
+     * Generate a unique 6-digit numeric Room ID (e.g. 739281).
+     */
+    private suspend fun generateUniqueNumericRoomId(firestore: FirebaseFirestore?): String {
+        val random = java.util.Random()
+        if (firestore == null) {
+            return (100000 + random.nextInt(900000)).toString()
+        }
+        for (attempt in 0..5) {
+            val candidate = (100000 + random.nextInt(900000)).toString()
+            try {
+                val doc = firestore.collection("room_ids").document(candidate).get().await()
+                if (!doc.exists()) {
+                    firestore.collection("room_ids").document(candidate).set(mapOf("createdAt" to System.currentTimeMillis())).await()
+                    return candidate
+                }
+            } catch (e: Exception) {
+                return candidate
+            }
+        }
+        return (100000 + random.nextInt(900000)).toString()
     }
 
     /**
@@ -121,7 +184,7 @@ class RoomRepository {
         val firestore = getFirestore()
         if (firestore != null) {
             try {
-                firestore.collection(collectionPath).document(roomId)
+                firestore.collection(roomsCollectionPath).document(roomId)
                     .addSnapshotListener { snapshot, error ->
                         if (error == null && snapshot != null && snapshot.exists()) {
                             val remoteRoom = snapshot.toObject(RoomData::class.java)
@@ -138,17 +201,22 @@ class RoomRepository {
     }
 
     /**
-     * Create a brand new Voice/Party Room.
+     * Create a brand new Voice/Party Room with unique numeric ID, cover, and subcollections.
      */
     suspend fun createVoiceRoom(
         title: String,
         description: String,
         category: String,
         hostUser: FirebaseUserProfile,
+        coverUrl: String = "",
+        password: String = "",
+        roomType: RoomType = RoomType.PUBLIC,
         bgGradientStart: String = "#2D124D",
         bgGradientEnd: String = "#1B1035"
     ): Result<String> {
-        val newRoomId = "room_" + UUID.randomUUID().toString().take(8)
+        val firestore = getFirestore()
+        val numericId = generateUniqueNumericRoomId(firestore)
+        val newRoomId = "room_$numericId"
 
         val initialSeats = mutableListOf<SeatData>()
         initialSeats.add(
@@ -159,24 +227,29 @@ class RoomRepository {
                 userAvatar = hostUser.avatar,
                 isSpeaking = false,
                 isMuted = false,
-                vipLevel = hostUser.vipLevel
+                vipLevel = hostUser.vipLevel,
+                isHost = true
             )
         )
-        for (i in 1..7) {
+        for (i in 1..9) {
             initialSeats.add(SeatData(seatIndex = i))
         }
 
         val newRoom = RoomData(
             id = newRoomId,
-            title = title.ifBlank { "VIP Voice Party" },
+            numericId = numericId,
+            title = title.ifBlank { "Voice Room #$numericId" },
             description = description.ifBlank { "Welcome to our lively voice room!" },
+            coverUrl = coverUrl.ifBlank { "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800" },
             hostId = hostUser.userId,
             hostName = hostUser.displayName.ifEmpty { "Host" },
             hostAvatar = hostUser.avatar,
             agencyName = "Diamond Club",
             hostLevel = hostUser.level,
+            roomType = roomType,
+            password = password,
             viewerCount = "1",
-            countryFlag = "🇧🇩",
+            countryFlag = "🌐",
             tag = category.ifBlank { "Party" },
             bgGradientStart = bgGradientStart,
             bgGradientEnd = bgGradientEnd,
@@ -195,18 +268,34 @@ class RoomRepository {
                     id = UUID.randomUUID().toString(),
                     roomId = newRoomId,
                     senderName = "System",
-                    text = "🎉 Welcome to $title! Be respectful and enjoy the party.",
+                    text = "🎉 Welcome to ${newRoom.title}! Room ID: $numericId. Enjoy chatting!",
                     isSystem = true
                 )
             )
         )
         _roomGiftMap[newRoomId] = MutableStateFlow(null)
 
-        // Try syncing to Firestore in background
+        // Set initial host member
+        val hostMember = RoomMember(
+            uid = hostUser.userId,
+            roomId = newRoomId,
+            displayName = hostUser.displayName,
+            avatarUrl = hostUser.avatar,
+            role = "HOST",
+            seatIndex = 0
+        )
+        _roomMembersMap[newRoomId] = MutableStateFlow(listOf(hostMember))
+        _speakerRequestsMap[newRoomId] = MutableStateFlow(emptyList())
+
+        // Try syncing to Firestore in background across rooms & active_voice_rooms & members
         repositoryScope.launch {
             try {
-                val firestore = getFirestore()
-                firestore?.collection(collectionPath)?.document(newRoomId)?.set(newRoom)?.await()
+                if (firestore != null) {
+                    firestore.collection(roomsCollectionPath).document(newRoomId).set(newRoom).await()
+                    firestore.collection(collectionPath).document(newRoomId).set(newRoom).await()
+                    firestore.collection(roomsCollectionPath).document(newRoomId)
+                        .collection("members").document(hostUser.userId).set(hostMember).await()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -224,10 +313,13 @@ class RoomRepository {
         _roomDetailMap.remove(roomId)
         _roomChatMap.remove(roomId)
         _roomGiftMap.remove(roomId)
+        _roomMembersMap.remove(roomId)
+        _speakerRequestsMap.remove(roomId)
 
         repositoryScope.launch {
             try {
                 val firestore = getFirestore()
+                firestore?.collection(roomsCollectionPath)?.document(roomId)?.delete()?.await()
                 firestore?.collection(collectionPath)?.document(roomId)?.delete()?.await()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -244,17 +336,139 @@ class RoomRepository {
         _roomDetailMap.clear()
         _roomChatMap.clear()
         _roomGiftMap.clear()
+        _roomMembersMap.clear()
+        _speakerRequestsMap.clear()
         return Result.success(Unit)
     }
 
     /**
+     * Join room as a member (adds to rooms/{roomId}/members/{uid}).
+     */
+    suspend fun joinRoomMember(roomId: String, user: FirebaseUserProfile, role: String = "AUDIENCE"): Result<Unit> {
+        val member = RoomMember(
+            uid = user.userId,
+            roomId = roomId,
+            displayName = user.displayName,
+            avatarUrl = user.avatar,
+            role = role,
+            joinedAt = System.currentTimeMillis()
+        )
+        val currentList = _roomMembersMap.getOrPut(roomId) { MutableStateFlow(emptyList()) }.value
+        val updated = currentList.filter { it.uid != user.userId } + member
+        _roomMembersMap[roomId]?.value = updated
+
+        // Update activeUserIds on room
+        val room = _roomDetailMap[roomId]?.value
+        if (room != null && !room.activeUserIds.contains(user.userId)) {
+            val updatedUsers = room.activeUserIds + user.userId
+            val updatedRoom = room.copy(
+                activeUserIds = updatedUsers,
+                viewerCount = "${updatedUsers.size}"
+            )
+            _roomDetailMap[roomId]?.value = updatedRoom
+        }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("members").document(user.userId).set(member).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Leave room member.
+     */
+    suspend fun leaveRoomMember(roomId: String, userId: String): Result<Unit> {
+        val currentList = _roomMembersMap[roomId]?.value ?: emptyList()
+        val leavingMember = currentList.find { it.uid == userId }
+        _roomMembersMap[roomId]?.value = currentList.filter { it.uid != userId }
+
+        // If leaving user was seated, free the seat automatically
+        val room = _roomDetailMap[roomId]?.value
+        val seatedIndex = room?.seats?.indexOfFirst { it.userId == userId } ?: -1
+        if (seatedIndex != -1 || leavingMember?.seatIndex != null) {
+            leaveSeat(roomId, if (seatedIndex != -1) seatedIndex else leavingMember?.seatIndex ?: 0, userId)
+        }
+
+        // Update activeUserIds
+        if (room != null) {
+            val updatedUsers = room.activeUserIds.filter { it != userId }
+            val updatedRoom = room.copy(
+                activeUserIds = updatedUsers,
+                viewerCount = "${maxOf(1, updatedUsers.size)}"
+            )
+            _roomDetailMap[roomId]?.value = updatedRoom
+        }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("members").document(userId).delete().await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Real-time stream of room members.
+     */
+    fun getRoomMembers(roomId: String): Flow<List<RoomMember>> {
+        val flow = _roomMembersMap.getOrPut(roomId) { MutableStateFlow(emptyList()) }
+        val firestore = getFirestore()
+        if (firestore != null) {
+            try {
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("members")
+                    .addSnapshotListener { snap, err ->
+                        if (err == null && snap != null) {
+                            val members = snap.toObjects(RoomMember::class.java)
+                            flow.value = members
+                        }
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return flow.asStateFlow()
+    }
+
+    /**
      * User takes a seat on the stage in real-time.
+     * Enforces: One user -> One seat, One seat -> One user.
+     * Moving to a new seat automatically frees any previous seat.
      */
     suspend fun takeSeat(roomId: String, seatIndex: Int, user: FirebaseUserProfile): Result<Unit> {
         val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
         if (currentRoom != null) {
             val updatedSeats = currentRoom.seats.toMutableList()
             if (seatIndex in updatedSeats.indices) {
+                // 1. If seat is locked, reject
+                if (updatedSeats[seatIndex].isLocked) {
+                    return Result.failure(Exception("Seat is locked by the host."))
+                }
+                // 2. If seat is occupied by another user, reject
+                val targetOccupant = updatedSeats[seatIndex].userId
+                if (targetOccupant != null && targetOccupant != user.userId) {
+                    return Result.failure(Exception("Seat ${seatIndex + 1} is already occupied."))
+                }
+
+                // 3. Auto-release any previous seat occupied by this user
+                for (i in updatedSeats.indices) {
+                    if (i != seatIndex && updatedSeats[i].userId == user.userId) {
+                        updatedSeats[i] = SeatData(seatIndex = i)
+                    }
+                }
+
+                val isHost = currentRoom.hostId == user.userId
+                val isCoHost = currentRoom.coHostIds.contains(user.userId)
                 updatedSeats[seatIndex] = SeatData(
                     seatIndex = seatIndex,
                     userId = user.userId,
@@ -262,12 +476,21 @@ class RoomRepository {
                     userAvatar = user.avatar,
                     isSpeaking = false,
                     isMuted = false,
-                    vipLevel = user.vipLevel
+                    vipLevel = user.vipLevel,
+                    isHost = isHost,
+                    isCoHost = isCoHost
                 )
             }
             val updatedRoom = currentRoom.copy(seats = updatedSeats)
             _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
             _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+            // Update member role in room members map
+            val members = _roomMembersMap[roomId]?.value ?: emptyList()
+            val updatedMembers = members.map { m ->
+                if (m.uid == user.userId) m.copy(role = if (m.role == "HOST") "HOST" else if (m.role == "CO_HOST") "CO_HOST" else "SPEAKER", seatIndex = seatIndex) else m
+            }
+            _roomMembersMap[roomId]?.value = updatedMembers
 
             // Add system chat
             sendChatMessage(
@@ -282,30 +505,52 @@ class RoomRepository {
             )
         }
 
-        // Sync to Firestore in background
+        // Sync to Firestore across both collections atomically
         repositoryScope.launch {
             try {
                 val firestore = getFirestore() ?: return@launch
-                val roomRef = firestore.collection(collectionPath).document(roomId)
-                firestore.runTransaction { tx ->
-                    val snap = tx.get(roomRef)
-                    val remoteRoom = snap.toObject(RoomData::class.java)
-                    if (remoteRoom != null) {
-                        val remoteSeats = remoteRoom.seats.toMutableList()
-                        if (seatIndex in remoteSeats.indices) {
-                            remoteSeats[seatIndex] = SeatData(
-                                seatIndex = seatIndex,
-                                userId = user.userId,
-                                userName = user.displayName,
-                                userAvatar = user.avatar,
-                                isSpeaking = false,
-                                isMuted = false,
-                                vipLevel = user.vipLevel
-                            )
-                            tx.update(roomRef, "seats", remoteSeats)
+                val paths = listOf(roomsCollectionPath, collectionPath)
+                for (path in paths) {
+                    val roomRef = firestore.collection(path).document(roomId)
+                    firestore.runTransaction { tx ->
+                        val snap = tx.get(roomRef)
+                        val remoteRoom = snap.toObject(RoomData::class.java)
+                        if (remoteRoom != null) {
+                            val remoteSeats = remoteRoom.seats.toMutableList()
+                            if (seatIndex in remoteSeats.indices) {
+                                val target = remoteSeats[seatIndex]
+                                if (target.isLocked) {
+                                    return@runTransaction
+                                }
+                                if (target.userId != null && target.userId != user.userId) {
+                                    return@runTransaction
+                                }
+
+                                // Auto-release any previous seat occupied by this user in remote state
+                                for (i in remoteSeats.indices) {
+                                    if (i != seatIndex && remoteSeats[i].userId == user.userId) {
+                                        remoteSeats[i] = SeatData(seatIndex = i)
+                                    }
+                                }
+
+                                val isHost = remoteRoom.hostId == user.userId
+                                val isCoHost = remoteRoom.coHostIds.contains(user.userId)
+                                remoteSeats[seatIndex] = SeatData(
+                                    seatIndex = seatIndex,
+                                    userId = user.userId,
+                                    userName = user.displayName,
+                                    userAvatar = user.avatar,
+                                    isSpeaking = false,
+                                    isMuted = false,
+                                    vipLevel = user.vipLevel,
+                                    isHost = isHost,
+                                    isCoHost = isCoHost
+                                )
+                                tx.update(roomRef, "seats", remoteSeats)
+                            }
                         }
-                    }
-                }.await()
+                    }.await()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -316,35 +561,54 @@ class RoomRepository {
 
     /**
      * User leaves their seat on the stage.
+     * Automatically frees any seat occupied by userId in this room.
      */
     suspend fun leaveSeat(roomId: String, seatIndex: Int, userId: String): Result<Unit> {
         val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
         if (currentRoom != null) {
             val updatedSeats = currentRoom.seats.toMutableList()
-            if (seatIndex in updatedSeats.indices) {
-                updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+            for (i in updatedSeats.indices) {
+                if (i == seatIndex || updatedSeats[i].userId == userId) {
+                    updatedSeats[i] = SeatData(seatIndex = i)
+                }
             }
             val updatedRoom = currentRoom.copy(seats = updatedSeats)
             _roomDetailMap.getOrPut(roomId) { MutableStateFlow(updatedRoom) }.value = updatedRoom
             _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+            // Update member role
+            val members = _roomMembersMap[roomId]?.value ?: emptyList()
+            val updatedMembers = members.map { m ->
+                if (m.uid == userId) m.copy(role = if (m.role == "HOST") "HOST" else if (m.role == "CO_HOST") "CO_HOST" else "AUDIENCE", seatIndex = null) else m
+            }
+            _roomMembersMap[roomId]?.value = updatedMembers
         }
 
         // Sync to Firestore in background
         repositoryScope.launch {
             try {
                 val firestore = getFirestore() ?: return@launch
-                val roomRef = firestore.collection(collectionPath).document(roomId)
-                firestore.runTransaction { tx ->
-                    val snap = tx.get(roomRef)
-                    val remoteRoom = snap.toObject(RoomData::class.java)
-                    if (remoteRoom != null) {
-                        val remoteSeats = remoteRoom.seats.toMutableList()
-                        if (seatIndex in remoteSeats.indices) {
-                            remoteSeats[seatIndex] = SeatData(seatIndex = seatIndex)
-                            tx.update(roomRef, "seats", remoteSeats)
+                val paths = listOf(roomsCollectionPath, collectionPath)
+                for (path in paths) {
+                    val roomRef = firestore.collection(path).document(roomId)
+                    firestore.runTransaction { tx ->
+                        val snap = tx.get(roomRef)
+                        val remoteRoom = snap.toObject(RoomData::class.java)
+                        if (remoteRoom != null) {
+                            val remoteSeats = remoteRoom.seats.toMutableList()
+                            var changed = false
+                            for (i in remoteSeats.indices) {
+                                if (i == seatIndex || remoteSeats[i].userId == userId) {
+                                    remoteSeats[i] = SeatData(seatIndex = i)
+                                    changed = true
+                                }
+                            }
+                            if (changed) {
+                                tx.update(roomRef, "seats", remoteSeats)
+                            }
                         }
-                    }
-                }.await()
+                    }.await()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -375,21 +639,24 @@ class RoomRepository {
         repositoryScope.launch {
             try {
                 val firestore = getFirestore() ?: return@launch
-                val roomRef = firestore.collection(collectionPath).document(roomId)
-                firestore.runTransaction { tx ->
-                    val snap = tx.get(roomRef)
-                    val remoteRoom = snap.toObject(RoomData::class.java)
-                    if (remoteRoom != null) {
-                        val remoteSeats = remoteRoom.seats.toMutableList()
-                        if (seatIndex in remoteSeats.indices) {
-                            remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(
-                                isMuted = isMuted,
-                                isSpeaking = if (isMuted) false else remoteSeats[seatIndex].isSpeaking
-                            )
-                            tx.update(roomRef, "seats", remoteSeats)
+                val paths = listOf(roomsCollectionPath, collectionPath)
+                for (path in paths) {
+                    val roomRef = firestore.collection(path).document(roomId)
+                    firestore.runTransaction { tx ->
+                        val snap = tx.get(roomRef)
+                        val remoteRoom = snap.toObject(RoomData::class.java)
+                        if (remoteRoom != null) {
+                            val remoteSeats = remoteRoom.seats.toMutableList()
+                            if (seatIndex in remoteSeats.indices) {
+                                remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(
+                                    isMuted = isMuted,
+                                    isSpeaking = if (isMuted) false else remoteSeats[seatIndex].isSpeaking
+                                )
+                                tx.update(roomRef, "seats", remoteSeats)
+                            }
                         }
-                    }
-                }.await()
+                    }.await()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -407,7 +674,15 @@ class RoomRepository {
             val updatedSeats = currentRoom.seats.toMutableList()
             if (seatIndex in updatedSeats.indices) {
                 if (kick) {
+                    val kickedUserId = updatedSeats[seatIndex].userId
                     updatedSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+                    // Update member role
+                    if (kickedUserId != null) {
+                        val members = _roomMembersMap[roomId]?.value ?: emptyList()
+                        _roomMembersMap[roomId]?.value = members.map {
+                            if (it.uid == kickedUserId) it.copy(role = "AUDIENCE", seatIndex = null) else it
+                        }
+                    }
                 } else if (mute) {
                     updatedSeats[seatIndex] = updatedSeats[seatIndex].copy(isMuted = true, isSpeaking = false)
                 }
@@ -420,28 +695,351 @@ class RoomRepository {
         repositoryScope.launch {
             try {
                 val firestore = getFirestore() ?: return@launch
-                val roomRef = firestore.collection(collectionPath).document(roomId)
-                firestore.runTransaction { tx ->
-                    val snap = tx.get(roomRef)
-                    val remoteRoom = snap.toObject(RoomData::class.java)
-                    if (remoteRoom != null) {
-                        val remoteSeats = remoteRoom.seats.toMutableList()
-                        if (seatIndex in remoteSeats.indices) {
-                            if (kick) {
-                                remoteSeats[seatIndex] = SeatData(seatIndex = seatIndex)
-                            } else if (mute) {
-                                remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(isMuted = true, isSpeaking = false)
+                val paths = listOf(roomsCollectionPath, collectionPath)
+                for (path in paths) {
+                    val roomRef = firestore.collection(path).document(roomId)
+                    firestore.runTransaction { tx ->
+                        val snap = tx.get(roomRef)
+                        val remoteRoom = snap.toObject(RoomData::class.java)
+                        if (remoteRoom != null) {
+                            val remoteSeats = remoteRoom.seats.toMutableList()
+                            if (seatIndex in remoteSeats.indices) {
+                                if (kick) {
+                                    remoteSeats[seatIndex] = SeatData(seatIndex = seatIndex)
+                                } else if (mute) {
+                                    remoteSeats[seatIndex] = remoteSeats[seatIndex].copy(isMuted = true, isSpeaking = false)
+                                }
+                                tx.update(roomRef, "seats", remoteSeats)
                             }
-                            tx.update(roomRef, "seats", remoteSeats)
                         }
-                    }
-                }.await()
+                    }.await()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
 
         return Result.success(Unit)
+    }
+
+    /**
+     * Request to speak (audience member requests a seat).
+     */
+    suspend fun requestToSpeak(roomId: String, user: FirebaseUserProfile, targetSeatIndex: Int = -1): Result<Unit> {
+        val request = SpeakerRequest(
+            id = user.userId,
+            roomId = roomId,
+            userId = user.userId,
+            userName = user.displayName,
+            userAvatar = user.avatar,
+            userLevel = user.level,
+            status = "PENDING",
+            targetSeatIndex = targetSeatIndex,
+            requestedAt = System.currentTimeMillis()
+        )
+        val requests = _speakerRequestsMap.getOrPut(roomId) { MutableStateFlow(emptyList()) }.value
+        _speakerRequestsMap[roomId]?.value = requests.filter { it.userId != user.userId } + request
+
+        sendChatMessage(
+            roomId,
+            ChatMessage(
+                id = UUID.randomUUID().toString(),
+                roomId = roomId,
+                senderName = "System",
+                text = "✋ ${user.displayName} requested to speak.",
+                isSystem = true
+            )
+        )
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("speakerRequests").document(user.userId).set(request).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Cancel speaking request.
+     */
+    suspend fun cancelSpeakerRequest(roomId: String, userId: String): Result<Unit> {
+        val requests = _speakerRequestsMap[roomId]?.value ?: emptyList()
+        _speakerRequestsMap[roomId]?.value = requests.filter { it.userId != userId }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("speakerRequests").document(userId).delete().await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Approve speaking request: assign user to first available empty seat.
+     */
+    suspend fun approveSpeakerRequest(roomId: String, request: SpeakerRequest): Result<Unit> {
+        // Remove from pending requests
+        val requests = _speakerRequestsMap[roomId]?.value ?: emptyList()
+        _speakerRequestsMap[roomId]?.value = requests.filter { it.userId != request.userId }
+
+        // Find empty seat
+        val currentRoom = _roomDetailMap[roomId]?.value ?: _roomsState.value.find { it.id == roomId }
+        if (currentRoom != null) {
+            val emptyIndex = if (request.targetSeatIndex in 1..7 && currentRoom.seats[request.targetSeatIndex].userId == null) {
+                request.targetSeatIndex
+            } else {
+                currentRoom.seats.indices.firstOrNull { it > 0 && currentRoom.seats[it].userId == null && !currentRoom.seats[it].isLocked } ?: -1
+            }
+
+            if (emptyIndex != -1) {
+                val fakeProfile = FirebaseUserProfile(
+                    userId = request.userId,
+                    displayName = request.userName,
+                    avatar = request.userAvatar,
+                    level = request.userLevel
+                )
+                takeSeat(roomId, emptyIndex, fakeProfile)
+            }
+        }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("speakerRequests").document(request.userId).update("status", "APPROVED").await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Reject speaking request.
+     */
+    suspend fun rejectSpeakerRequest(roomId: String, userId: String): Result<Unit> {
+        val requests = _speakerRequestsMap[roomId]?.value ?: emptyList()
+        _speakerRequestsMap[roomId]?.value = requests.filter { it.userId != userId }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("speakerRequests").document(userId).delete().await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Real-time stream of speaker requests.
+     */
+    fun getSpeakerRequests(roomId: String): Flow<List<SpeakerRequest>> {
+        val flow = _speakerRequestsMap.getOrPut(roomId) { MutableStateFlow(emptyList()) }
+        val firestore = getFirestore()
+        if (firestore != null) {
+            try {
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("speakerRequests")
+                    .whereEqualTo("status", "PENDING")
+                    .addSnapshotListener { snap, err ->
+                        if (err == null && snap != null) {
+                            flow.value = snap.toObjects(SpeakerRequest::class.java)
+                        }
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return flow.asStateFlow()
+    }
+
+    /**
+     * Assign or remove a co-host.
+     */
+    suspend fun assignCoHost(roomId: String, targetUserId: String, isCoHost: Boolean): Result<Unit> {
+        val room = _roomDetailMap[roomId]?.value ?: return Result.failure(Exception("Room not found"))
+        val updatedCoHosts = if (isCoHost) {
+            (room.coHostIds + targetUserId).distinct()
+        } else {
+            room.coHostIds.filter { it != targetUserId }
+        }
+        val updatedSeats = room.seats.map { seat ->
+            if (seat.userId == targetUserId) seat.copy(isCoHost = isCoHost) else seat
+        }
+        val updatedRoom = room.copy(coHostIds = updatedCoHosts, seats = updatedSeats)
+        _roomDetailMap[roomId]?.value = updatedRoom
+        _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+        // Update member role
+        val members = _roomMembersMap[roomId]?.value ?: emptyList()
+        _roomMembersMap[roomId]?.value = members.map {
+            if (it.uid == targetUserId) it.copy(role = if (isCoHost) "CO_HOST" else if (it.seatIndex != null) "SPEAKER" else "AUDIENCE") else it
+        }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId).update("coHostIds", updatedCoHosts).await()
+                firestore.collection(collectionPath).document(roomId).update("coHostIds", updatedCoHosts).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Lock/unlock a specific seat so audience cannot sit there.
+     */
+    suspend fun lockSeat(roomId: String, seatIndex: Int, isLocked: Boolean): Result<Unit> {
+        val room = _roomDetailMap[roomId]?.value ?: return Result.failure(Exception("Room not found"))
+        val updatedSeats = room.seats.toMutableList()
+        if (seatIndex in updatedSeats.indices) {
+            updatedSeats[seatIndex] = updatedSeats[seatIndex].copy(isLocked = isLocked)
+        }
+        val updatedRoom = room.copy(seats = updatedSeats)
+        _roomDetailMap[roomId]?.value = updatedRoom
+        _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId).update("seats", updatedSeats).await()
+                firestore.collection(collectionPath).document(roomId).update("seats", updatedSeats).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Mute or unmute all non-host seats at once.
+     */
+    suspend fun muteAllSeats(roomId: String, isAllMuted: Boolean): Result<Unit> {
+        val room = _roomDetailMap[roomId]?.value ?: return Result.failure(Exception("Room not found"))
+        val updatedSeats = room.seats.map { seat ->
+            if (!seat.isHost && seat.userId != null) {
+                seat.copy(isMuted = isAllMuted, isSpeaking = if (isAllMuted) false else seat.isSpeaking)
+            } else {
+                seat
+            }
+        }
+        val updatedRoom = room.copy(seats = updatedSeats, isAllMuted = isAllMuted)
+        _roomDetailMap[roomId]?.value = updatedRoom
+        _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId).update(
+                    mapOf(
+                        "seats" to updatedSeats,
+                        "isAllMuted" to isAllMuted
+                    )
+                ).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Lock or unlock the entire room with an optional password.
+     */
+    suspend fun setRoomLock(roomId: String, isLocked: Boolean, password: String = ""): Result<Unit> {
+        val room = _roomDetailMap[roomId]?.value ?: return Result.failure(Exception("Room not found"))
+        val updatedRoom = room.copy(
+            isLocked = isLocked,
+            password = password,
+            roomType = if (isLocked || password.isNotBlank()) RoomType.PRIVATE else RoomType.PUBLIC
+        )
+        _roomDetailMap[roomId]?.value = updatedRoom
+        _roomsState.value = _roomsState.value.map { if (it.id == roomId) updatedRoom else it }
+
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId).update(
+                    mapOf(
+                        "isLocked" to isLocked,
+                        "password" to password,
+                        "roomType" to updatedRoom.roomType.name
+                    )
+                ).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return Result.success(Unit)
+    }
+
+    /**
+     * Send WebRTC signal for group room audio.
+     */
+    fun sendRoomRtcSignal(roomId: String, signal: RoomRtcSignal) {
+        _roomSignalsMap[roomId]?.value = signal
+        repositoryScope.launch {
+            try {
+                val firestore = getFirestore() ?: return@launch
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("signals").document(signal.id).set(signal).await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Listen to incoming WebRTC signals in this room.
+     */
+    fun getRoomRtcSignals(roomId: String, myUserId: String): Flow<RoomRtcSignal?> {
+        val flow = _roomSignalsMap.getOrPut(roomId) { MutableStateFlow(null) }
+        val firestore = getFirestore()
+        if (firestore != null) {
+            try {
+                firestore.collection(roomsCollectionPath).document(roomId)
+                    .collection("signals")
+                    .whereEqualTo("receiverUid", myUserId)
+                    .addSnapshotListener { snap, err ->
+                        if (err == null && snap != null && !snap.isEmpty) {
+                            val signals = snap.toObjects(RoomRtcSignal::class.java)
+                            if (signals.isNotEmpty()) {
+                                flow.value = signals.last()
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return flow.asStateFlow()
+    }
+
+    /**
+     * Search active rooms by numeric ID or title.
+     */
+    fun searchRooms(query: String): List<RoomData> {
+        val cleanQuery = query.trim().lowercase()
+        if (cleanQuery.isEmpty()) return _roomsState.value
+        return _roomsState.value.filter { room ->
+            room.numericId.contains(cleanQuery) ||
+            room.title.lowercase().contains(cleanQuery) ||
+            room.tag.lowercase().contains(cleanQuery) ||
+            room.hostName.lowercase().contains(cleanQuery)
+        }
     }
 
     /**
@@ -575,19 +1173,94 @@ class RoomRepository {
                 val firestore = getFirestore() ?: return@launch
                 val senderRef = firestore.collection(usersCollectionPath).document(senderId)
                 val receiverRef = firestore.collection(usersCollectionPath).document(receiverId)
+                val senderWalletRef = firestore.collection("wallets").document(senderId)
+                val receiverWalletRef = firestore.collection("wallets").document(receiverId)
                 val roomGiftsRef = firestore.collection(collectionPath).document(roomId).collection("gifts").document(txId)
+                val globalGiftTxRef = firestore.collection("giftTransactions").document(txId)
 
                 firestore.runTransaction { tx ->
                     val senderSnap = tx.get(senderRef)
-                    val cur = senderSnap.getLong("coinBalance") ?: 5000L
-                    tx.update(senderRef, "coinBalance", maxOf(0L, cur - gift.costCoins))
+                    val senderWalletSnap = tx.get(senderWalletRef)
+                    val cur = if (senderWalletSnap.exists()) {
+                        senderWalletSnap.getLong("coinBalance") ?: (senderSnap.getLong("coinBalance") ?: 5000L)
+                    } else {
+                        senderSnap.getLong("coinBalance") ?: 5000L
+                    }
+                    val newSenderBal = maxOf(0L, cur - gift.costCoins)
+                    val senderSpent = (senderWalletSnap.getLong("lifetimeSpentCoins") ?: 0L) + gift.costCoins
+
+                    tx.update(senderRef, "coinBalance", newSenderBal)
+                    tx.set(
+                        senderWalletRef,
+                        mapOf(
+                            "uid" to senderId,
+                            "coinBalance" to newSenderBal,
+                            "lifetimeSpentCoins" to senderSpent,
+                            "updatedAt" to System.currentTimeMillis()
+                        ),
+                        com.google.firebase.firestore.SetOptions.merge()
+                    )
 
                     val receiverSnap = tx.get(receiverRef)
+                    val receiverWalletSnap = tx.get(receiverWalletRef)
                     val curDiamonds = receiverSnap.getLong("receivedDiamonds") ?: 0L
                     val curGifts = receiverSnap.getLong("giftsReceivedCount") ?: 0L
+                    val receiverGiftVal = (receiverWalletSnap.getLong("lifetimeGiftValue") ?: 0L) + gift.costCoins
+
                     tx.update(receiverRef, "receivedDiamonds", curDiamonds + gift.costCoins)
                     tx.update(receiverRef, "giftsReceivedCount", curGifts + 1)
+                    tx.set(
+                        receiverWalletRef,
+                        mapOf(
+                            "uid" to receiverId,
+                            "lifetimeGiftValue" to receiverGiftVal,
+                            "lifetimeReceivedCoins" to ((receiverWalletSnap.getLong("lifetimeReceivedCoins") ?: 0L) + gift.costCoins),
+                            "updatedAt" to System.currentTimeMillis()
+                        ),
+                        com.google.firebase.firestore.SetOptions.merge()
+                    )
+
                     tx.set(roomGiftsRef, giftTx)
+
+                    // Write to global giftTransactions
+                    val fullGiftRecord = mapOf(
+                        "giftTransactionId" to txId,
+                        "operationId" to txId,
+                        "senderUid" to senderId,
+                        "senderDisplayName" to senderName,
+                        "senderAvatarUrl" to senderAvatar,
+                        "recipientUid" to receiverId,
+                        "recipientDisplayName" to receiverName,
+                        "giftId" to gift.id,
+                        "giftName" to gift.name,
+                        "giftEmoji" to gift.emoji,
+                        "coinPrice" to gift.costCoins,
+                        "quantity" to 1,
+                        "totalCoins" to gift.costCoins,
+                        "roomId" to roomId,
+                        "createdAt" to System.currentTimeMillis(),
+                        "status" to "SUCCESS"
+                    )
+                    tx.set(globalGiftTxRef, fullGiftRecord)
+
+                    // Write walletTransactions for sender and recipient
+                    val senderLedgerId = firestore.collection("walletTransactions").document().id
+                    tx.set(
+                        firestore.collection("walletTransactions").document(senderLedgerId),
+                        mapOf(
+                            "transactionId" to senderLedgerId,
+                            "uid" to senderId,
+                            "type" to "GIFT_SENT",
+                            "amount" to -gift.costCoins,
+                            "balanceBefore" to cur,
+                            "balanceAfter" to newSenderBal,
+                            "referenceId" to txId,
+                            "status" to "SUCCESS",
+                            "description" to "Sent ${gift.emoji} ${gift.name} to $receiverName in room",
+                            "createdAt" to System.currentTimeMillis(),
+                            "serverTimestamp" to System.currentTimeMillis()
+                        )
+                    )
                 }.await()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -716,43 +1389,51 @@ class RoomRepository {
 
     private fun getFallbackRooms(): List<RoomData> {
         val room1Seats = listOf(
-            SeatData(0, "ID_HOST_1001", "Aria Star", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150", isSpeaking = true, isMuted = false, vipLevel = 3),
+            SeatData(0, "ID_HOST_1001", "Aria Star", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150", isSpeaking = true, isMuted = false, vipLevel = 3, isHost = true),
             SeatData(1, "ID_SOPHIA_2002", "Sophia", "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150", isSpeaking = false, isMuted = false, vipLevel = 1),
             SeatData(2, "ID_LEO_3003", "Leo Cruz", "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150", isSpeaking = true, isMuted = false, vipLevel = 2),
             SeatData(3),
             SeatData(4, "ID_ELENA_4004", "Elena Joy", "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150", isSpeaking = false, isMuted = true, vipLevel = 1),
             SeatData(5),
             SeatData(6),
-            SeatData(7)
+            SeatData(7),
+            SeatData(8),
+            SeatData(9)
         )
 
         val room2Seats = listOf(
-            SeatData(0, "ID_HOST_1002", "DJ Mike", "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150", isSpeaking = true, isMuted = false, vipLevel = 4),
+            SeatData(0, "ID_HOST_1002", "DJ Mike", "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150", isSpeaking = true, isMuted = false, vipLevel = 4, isHost = true),
             SeatData(1, "ID_CHLOE_2005", "Chloe", "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150", isSpeaking = false, isMuted = false, vipLevel = 2),
             SeatData(2),
             SeatData(3),
             SeatData(4),
             SeatData(5),
             SeatData(6),
-            SeatData(7)
+            SeatData(7),
+            SeatData(8),
+            SeatData(9)
         )
 
         val banglaSeats = listOf(
-            SeatData(0, "ID_HOST_BANGLA", "Tanvir Ahmed", "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150", isSpeaking = true, isMuted = false, vipLevel = 5),
+            SeatData(0, "ID_HOST_BANGLA", "Tanvir Ahmed", "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150", isSpeaking = true, isMuted = false, vipLevel = 5, isHost = true),
             SeatData(1, "ID_SADIA_BANGLA", "Sadia Noor", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150", isSpeaking = false, isMuted = false, vipLevel = 3),
             SeatData(2),
             SeatData(3),
             SeatData(4),
             SeatData(5),
             SeatData(6),
-            SeatData(7)
+            SeatData(7),
+            SeatData(8),
+            SeatData(9)
         )
 
         return listOf(
             RoomData(
                 id = "room_acoustic_night",
+                numericId = "738192",
                 title = "🎸 Acoustic Vibes & Late Chat",
                 description = "Singing acoustic covers and having chill late night conversations. Grab a seat!",
+                coverUrl = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800",
                 hostId = "ID_HOST_1001",
                 hostName = "Aria Star",
                 hostAvatar = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150",
@@ -768,8 +1449,10 @@ class RoomRepository {
             ),
             RoomData(
                 id = "room_bangla_adda",
+                numericId = "519024",
                 title = "🇧🇩 বাংলা আড্ডা ও গান নাইট",
                 description = "সবাই আসুন স্টেজে উঠে কথা বলুন ও গান শুনুন! Enjoy live chat.",
+                coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800",
                 hostId = "ID_HOST_BANGLA",
                 hostName = "Tanvir Ahmed",
                 hostAvatar = "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150",
@@ -785,8 +1468,10 @@ class RoomRepository {
             ),
             RoomData(
                 id = "room_electronic_party",
+                numericId = "842105",
                 title = "⚡ EDM Beats & Club Chillout",
                 description = "Live DJ mixes, gift wars, and party games!",
+                coverUrl = "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=800",
                 hostId = "ID_HOST_1002",
                 hostName = "DJ Mike",
                 hostAvatar = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150",
@@ -802,8 +1487,10 @@ class RoomRepository {
             ),
             RoomData(
                 id = "room_global_friends",
+                numericId = "629341",
                 title = "🌍 Global Friends & Language Exchange",
                 description = "Meet people from across the globe, practice languages, and relax.",
+                coverUrl = "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?w=800",
                 hostId = "ID_HOST_1003",
                 hostName = "Kenji Tokyo",
                 hostAvatar = "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=150",
@@ -814,7 +1501,7 @@ class RoomRepository {
                 tag = "Chat",
                 bgGradientStart = "#134E5E",
                 bgGradientEnd = "#71B280",
-                seats = List(8) { if (it == 0) SeatData(0, "ID_HOST_1003", "Kenji Tokyo", "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=150", isSpeaking = true) else SeatData(it) },
+                seats = List(10) { if (it == 0) SeatData(0, "ID_HOST_1003", "Kenji Tokyo", "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=150", isSpeaking = true, isHost = true) else SeatData(it) },
                 createdAt = System.currentTimeMillis() - 7200000
             )
         )

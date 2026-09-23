@@ -31,6 +31,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.FirebaseUserProfile
+import com.example.data.model.ModerationRoles
+import com.example.data.model.ProfileFrame
+import com.example.ui.components.ProfileAvatarWithFrame
+import com.example.ui.components.UserSearchSheet
+import com.example.ui.components.VisitedUserProfileDialog
 import com.example.ui.theme.GoldPremium
 import com.example.ui.theme.TealPremium
 import com.example.utils.AccompanistPermissionHandler
@@ -48,7 +53,13 @@ val CrystalDiamond = Color(0xFF00E5FF)
 fun ProfileScreen(
     viewModel: ProfileViewModel,
     onLogoutClick: () -> Unit,
-    onWalletClick: () -> Unit = {}
+    onWalletClick: () -> Unit = {},
+    onVipClick: () -> Unit = {},
+    onNavigateNotifications: () -> Unit = {},
+    onNavigateModeration: () -> Unit = {},
+    onNavigateAdmin: () -> Unit = {},
+    onSendMessage: (FirebaseUserProfile) -> Unit = {},
+    onVoiceCall: (FirebaseUserProfile) -> Unit = {}
 ) {
     val user by viewModel.user.collectAsState()
     val profile by viewModel.profile.collectAsState()
@@ -60,10 +71,21 @@ fun ProfileScreen(
         else -> null
     }
 
-    val dynamicCoinBalance = firestoreProfile?.coinBalance ?: (profile?.coinBalance ?: 158400L)
-    val dynamicDiamondBalance = firestoreProfile?.diamondBalance ?: (profile?.earnings ?: 4820L)
-    val dynamicVipLevel = firestoreProfile?.vipLevel ?: (profile?.vipLevel ?: 3)
-    val dynamicLevel = firestoreProfile?.level ?: (profile?.level ?: 18)
+    val dynamicCoinBalance = firestoreProfile?.coinBalance ?: (profile?.coinBalance ?: 0L)
+    val dynamicDiamondBalance = firestoreProfile?.diamondBalance ?: (profile?.earnings ?: 0L)
+    val dynamicVipLevel = firestoreProfile?.vipLevel ?: (profile?.vipLevel ?: 1)
+    val dynamicLevel = firestoreProfile?.level ?: (profile?.level ?: 1)
+
+    val availableFrames by viewModel.availableFrames.collectAsState()
+    val equippedFrame = remember(availableFrames, firestoreProfile?.profileFrameId) {
+        availableFrames.find { it.id == firestoreProfile?.profileFrameId } ?: availableFrames.firstOrNull()
+    }
+
+    var showFrameSheet by remember { mutableStateOf(false) }
+    var showProfileFrameStoreDialog by remember { mutableStateOf(false) }
+    var showSearchSheet by remember { mutableStateOf(false) }
+    var visitedUser by remember { mutableStateOf<FirebaseUserProfile?>(null) }
+    var giftingTargetUser by remember { mutableStateOf<FirebaseUserProfile?>(null) }
 
     var activeDialogTitle by remember { mutableStateOf<String?>(null) }
     var activeDialogContent by remember { mutableStateOf<String?>(null) }
@@ -101,9 +123,90 @@ fun ProfileScreen(
         )
     }
 
+    if (showFrameSheet) {
+        ProfileFrameSelectionSheet(
+            avatarUrl = firestoreProfile?.avatar ?: user?.avatar,
+            currentFrameId = equippedFrame?.id ?: "",
+            availableFrames = availableFrames,
+            onDismiss = { showFrameSheet = false },
+            onEquipFrame = { frame ->
+                viewModel.selectProfileFrame(frame.id)
+                Toast.makeText(context, "${frame.name} equipped!", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    if (showSearchSheet) {
+        UserSearchSheet(
+            userRepository = viewModel.userRepository,
+            currentUserId = viewModel.currentUserId,
+            onDismiss = { showSearchSheet = false },
+            onUserSelected = { selected ->
+                showSearchSheet = false
+                visitedUser = selected
+            }
+        )
+    }
+
+    if (visitedUser != null) {
+        VisitedUserProfileDialog(
+            user = visitedUser!!,
+            currentUserId = viewModel.currentUserId,
+            userRepository = viewModel.userRepository,
+            onDismiss = { visitedUser = null },
+            onSendMessage = { target ->
+                visitedUser = null
+                onSendMessage(target)
+            },
+            onVoiceCall = { target ->
+                visitedUser = null
+                onVoiceCall(target)
+            },
+            onSendGift = { target ->
+                visitedUser = null
+                giftingTargetUser = target
+            }
+        )
+    }
+
+    if (giftingTargetUser != null) {
+        com.example.ui.components.SendGiftDialog(
+            senderUid = viewModel.currentUserId,
+            recipientUid = giftingTargetUser!!.userId,
+            recipientPublicId = giftingTargetUser!!.publicUserId,
+            recipientName = giftingTargetUser!!.displayName,
+            recipientAvatar = giftingTargetUser!!.avatar,
+            onDismiss = { giftingTargetUser = null },
+            onGiftSent = { gift, qty ->
+                giftingTargetUser = null
+            },
+            onNavigateToRecharge = {
+                giftingTargetUser = null
+                onWalletClick()
+            }
+        )
+    }
+
+    if (showProfileFrameStoreDialog) {
+        com.example.ui.components.ProfileFrameStoreDialog(
+            currentUserId = viewModel.currentUserId,
+            currentUserAvatar = firestoreProfile?.avatar ?: (user?.avatar ?: ""),
+            currentEquippedFrameId = firestoreProfile?.profileFrameId ?: "frame_default",
+            onDismiss = { showProfileFrameStoreDialog = false },
+            onEquippedChanged = { frameId ->
+                viewModel.selectProfileFrame(frameId)
+                showProfileFrameStoreDialog = false
+            },
+            onNavigateToRecharge = {
+                showProfileFrameStoreDialog = false
+                onWalletClick()
+            }
+        )
+    }
+
     if (showEditProfileDialog) {
         UserProfileSettingsDialog(
-            currentDisplayName = firestoreProfile?.displayName ?: (user?.displayName ?: "Alex King 👑"),
+            currentDisplayName = firestoreProfile?.displayName ?: (user?.displayName ?: "VIP Member"),
             currentBio = firestoreProfile?.bio ?: (profile?.bio ?: "Voice room enthusiast and active party club member! 🎙️✨"),
             currentAvatar = firestoreProfile?.avatar ?: user?.avatar,
             currentCover = firestoreProfile?.coverImage ?: user?.coverImage,
@@ -133,22 +236,28 @@ fun ProfileScreen(
             .padding(bottom = 90.dp)
     ) {
         // --- 1. PROFILE HEADER SECTION ---
+        val isModerator = ModerationRoles.isModeratorOrAbove(firestoreProfile?.role ?: "USER")
         ProfileHeaderSection(
-            displayName = firestoreProfile?.displayName ?: (user?.displayName ?: "Alex King 👑"),
-            username = firestoreProfile?.username ?: (user?.username ?: "alex_king"),
-            uid = firestoreProfile?.publicUserId ?: (user?.publicUserId ?: "884920"),
-            avatarUrl = firestoreProfile?.avatar ?: (user?.avatar ?: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150"),
+            displayName = firestoreProfile?.displayName ?: (user?.displayName ?: "VIP Host"),
+            username = firestoreProfile?.username ?: (user?.username ?: "vip_host"),
+            uid = firestoreProfile?.publicUserId ?: (user?.publicUserId ?: "Pending"),
+            avatarUrl = firestoreProfile?.avatar ?: (user?.avatar ?: ""),
+            frame = equippedFrame,
             vipLevel = dynamicVipLevel,
             hostLevel = dynamicLevel,
-            followersCount = firestoreProfile?.followersCount ?: (profile?.followingCount ?: 380),
-            fansCount = firestoreProfile?.followingCount ?: (profile?.followersCount ?: 1420),
+            followersCount = firestoreProfile?.followersCount ?: (profile?.followingCount ?: 0),
+            fansCount = firestoreProfile?.followingCount ?: (profile?.followersCount ?: 0),
             charmValue = dynamicDiamondBalance * 4,
+            isOnline = firestoreProfile?.isOnline ?: true,
             onSettingsClick = { showSettingsSheet = true },
             onEditClick = {
                 executeWithPermissionCheck {
                     showEditProfileDialog = true
                 }
-            }
+            },
+            onFrameClick = { showProfileFrameStoreDialog = true },
+            onSearchClick = { showSearchSheet = true },
+            onNotificationsClick = onNavigateNotifications
         )
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -156,7 +265,7 @@ fun ProfileScreen(
         // --- 2. VIP BADGE SHOWCASE CAROUSEL ---
         VipBadgeSection(
             currentVipLevel = dynamicVipLevel,
-            onBadgeClick = { badge -> showVipDetailDialog = badge }
+            onBadgeClick = { badge -> onVipClick() }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -188,8 +297,12 @@ fun ProfileScreen(
         // --- 5. MENU GRID (4x2 Grid) ---
         FeatureGridSection(
             onFeatureClick = { title, desc ->
-                activeDialogTitle = title
-                activeDialogContent = desc
+                if (title == "VIP") {
+                    onVipClick()
+                } else {
+                    activeDialogTitle = title
+                    activeDialogContent = desc
+                }
             }
         )
 
@@ -197,13 +310,19 @@ fun ProfileScreen(
 
         // --- 6. ACTION LIST ---
         val showAgency = (firestoreProfile?.agencyId != null) || (profile?.agencyId != null) || (user?.roleId ?: 1) > 1
+        val isAdmin = ModerationRoles.isAdminOrAbove(firestoreProfile?.role ?: "USER")
         ActionListSection(
             showAgency = showAgency,
             agencyName = firestoreProfile?.agencyId ?: (profile?.agencyId ?: "Star_Talent_Agency"),
+            isModerator = isModerator,
+            isAdmin = isAdmin,
             onActionClick = { title, desc ->
                 activeDialogTitle = title
                 activeDialogContent = desc
             },
+            onNotificationsClick = onNavigateNotifications,
+            onModerationClick = onNavigateModeration,
+            onAdminClick = onNavigateAdmin,
             onOpenSettings = { showSettingsSheet = true },
             onLogoutPrompt = { showLogoutConfirm = true }
         )
@@ -432,7 +551,7 @@ fun VipBadgeSection(
 }
 
 // ----------------------------------------------------
-// Profile Header Section with 3D Animated Border
+// Profile Header Section with Real VIP Frames and Search
 // ----------------------------------------------------
 @Composable
 fun ProfileHeaderSection(
@@ -440,24 +559,21 @@ fun ProfileHeaderSection(
     username: String,
     uid: String,
     avatarUrl: String,
+    frame: ProfileFrame?,
     vipLevel: Int,
     hostLevel: Int,
     followersCount: Int,
     fansCount: Int,
     charmValue: Long,
+    isOnline: Boolean,
     onSettingsClick: () -> Unit,
-    onEditClick: () -> Unit
+    onEditClick: () -> Unit,
+    onFrameClick: () -> Unit,
+    onSearchClick: () -> Unit,
+    onNotificationsClick: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
-
-    val infiniteTransition = rememberInfiniteTransition(label = "halo")
-    val borderRotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(6000, easing = LinearEasing), RepeatMode.Restart),
-        label = "rotation"
-    )
 
     Box(
         modifier = Modifier
@@ -472,70 +588,43 @@ fun ProfileHeaderSection(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             
-            // Top action icons
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            // Top action icons: Notifications, Search, Frame, Edit, Settings
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onNotificationsClick, modifier = Modifier.testTag("notifications_button")) {
+                    Icon(Icons.Outlined.Notifications, contentDescription = "Notifications", tint = GoldPremium)
+                }
+                IconButton(onClick = onSearchClick, modifier = Modifier.testTag("search_users_button")) {
+                    Icon(Icons.Default.PersonSearch, contentDescription = "Search Users", tint = GoldPremium)
+                }
+                IconButton(onClick = onFrameClick, modifier = Modifier.testTag("select_frame_button")) {
+                    Icon(Icons.Default.AutoAwesome, contentDescription = "VIP Frame", tint = GoldPremium)
+                }
                 IconButton(onClick = onEditClick, modifier = Modifier.testTag("edit_profile_button")) {
-                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Profile", tint = GoldPremium)
+                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Profile", tint = Color.White)
                 }
                 IconButton(onClick = onSettingsClick, modifier = Modifier.testTag("settings_button")) {
                     Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = Color.White)
                 }
             }
 
-            // Profile Picture with Rotating Border Halo
-            Box(
-                modifier = Modifier
-                    .size(108.dp)
-                    .testTag("avatar_container"),
-                contentAlignment = Alignment.Center
-            ) {
-                // Outer sweep halo
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .graphicsLayer { rotationZ = borderRotation }
-                        .background(
-                            Brush.sweepGradient(
-                                colors = listOf(GoldPremium, TealPremium, Color.White, GoldPremium)
-                            )
-                        )
-                )
+            Spacer(modifier = Modifier.height(6.dp))
 
-                // Inner Avatar
-                Box(
-                    modifier = Modifier
-                        .size(98.dp)
-                        .clip(CircleShape)
-                        .background(DarkSurfaceCard),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AsyncImage(
-                        model = avatarUrl,
-                        contentDescription = "Avatar",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().clip(CircleShape)
-                    )
-                }
+            // Profile Picture with Equipped VIP Frame
+            ProfileAvatarWithFrame(
+                avatarUrl = avatarUrl,
+                frame = frame,
+                size = 110.dp,
+                isOnline = isOnline,
+                onClick = onFrameClick
+            )
 
-                // VIP Badge
-                if (vipLevel > 0) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .offset(y = 10.dp)
-                            .background(GoldPremium, RoundedCornerShape(12.dp))
-                            .border(1.dp, Color.White, RoundedCornerShape(12.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text("👑 VIP $vipLevel", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(14.dp))
 
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // User name, Badges & UID
+            // User name, Badges & Permanent Numeric UID
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -554,39 +643,42 @@ fun ProfileHeaderSection(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Permanent Numeric Public User ID Badge with Copy
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = Color(0xFF221A38),
                         border = BorderStroke(1.dp, Brush.horizontalGradient(listOf(GoldPremium, TealPremium))),
                         modifier = Modifier.clickable {
                             clipboardManager.setText(AnnotatedString(uid))
-                            Toast.makeText(context, "👑 VIP UID $uid copied to clipboard!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "ID $uid copied to clipboard!", Toast.LENGTH_SHORT).show()
                         }
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("👑 ID: $uid", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GoldPremium)
+                            Text("ID: $uid", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GoldPremium)
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy UID", modifier = Modifier.size(13.dp), tint = TealPremium)
                         }
                     }
 
+                    // Online Presence Badge
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFF2979FF).copy(alpha = 0.2f),
-                        border = BorderStroke(1.dp, Color(0xFF2979FF).copy(alpha = 0.5f))
+                        color = Color(0xFF00E676).copy(alpha = 0.15f),
+                        border = BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.5f))
                     ) {
                         Text(
-                            text = "♂ 24",
+                            text = if (isOnline) "🟢 Online" else "⚪ Offline",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF2979FF),
+                            color = if (isOnline) Color(0xFF00E676) else Color.LightGray,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
 
+                    // Level Badge
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = GoldPremium.copy(alpha = 0.25f),
@@ -844,7 +936,12 @@ fun FeatureGridItem(
 fun ActionListSection(
     showAgency: Boolean,
     agencyName: String,
+    isModerator: Boolean = false,
+    isAdmin: Boolean = false,
     onActionClick: (String, String) -> Unit,
+    onNotificationsClick: () -> Unit = {},
+    onModerationClick: () -> Unit = {},
+    onAdminClick: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onLogoutPrompt: () -> Unit
 ) {
@@ -857,6 +954,27 @@ fun ActionListSection(
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
         Column {
+            ActionListItem(
+                title = "Notifications & Activity",
+                icon = Icons.Outlined.Notifications,
+                onClick = onNotificationsClick
+            )
+            if (isModerator) {
+                ActionListItem(
+                    title = "🛡️ Moderator Dashboard",
+                    icon = Icons.Outlined.Security,
+                    tint = GoldPremium,
+                    onClick = onModerationClick
+                )
+            }
+            if (isAdmin) {
+                ActionListItem(
+                    title = "⚡ Platform Admin Panel",
+                    icon = Icons.Outlined.AdminPanelSettings,
+                    tint = GoldPremium,
+                    onClick = onAdminClick
+                )
+            }
             ActionListItem(
                 title = "Host Data Analytics",
                 icon = Icons.Outlined.Analytics,
