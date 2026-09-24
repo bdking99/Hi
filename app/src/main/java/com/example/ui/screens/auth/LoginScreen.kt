@@ -1,7 +1,11 @@
 package com.example.ui.screens.auth
 
+import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -11,10 +15,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,7 +24,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,6 +35,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.utils.GoogleSignInHelper
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.common.api.ApiException
+import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
@@ -40,22 +47,66 @@ fun LoginScreen(
     onNavigateRegister: () -> Unit,
     onNavigateForgotPassword: () -> Unit = {}
 ) {
-    var email by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val coroutineScope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+
+    var emailOrPhone by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
     var forgotEmail by remember { mutableStateOf("") }
     var infoMessage by remember { mutableStateOf<String?>(null) }
 
+    // Phone OTP Verification Dialog State
+    var showOtpDialog by remember { mutableStateOf(false) }
+    var activeVerificationId by remember { mutableStateOf("") }
+    var activePhoneNumber by remember { mutableStateOf("") }
+    var otpCodeInput by remember { mutableStateOf("") }
+
     val uiState by viewModel.uiState.collectAsState()
-    val focusManager = LocalFocusManager.current
+
+    // Google Sign-In Legacy Intent Fallback Launcher
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(ApiException::class.java)
+                val idToken = account?.idToken
+                if (!idToken.isNullOrBlank()) {
+                    viewModel.signInWithGoogle(
+                        idToken = idToken,
+                        email = account.email,
+                        displayName = account.displayName,
+                        photoUrl = account.photoUrl?.toString()
+                    )
+                } else {
+                    infoMessage = "Failed to retrieve Google token. Please try again."
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                infoMessage = "Google Sign-In failed: ${e.localizedMessage ?: "Unknown error"}"
+            }
+        } else {
+            infoMessage = "Google Sign-In cancelled."
+        }
+    }
 
     LaunchedEffect(uiState) {
         when (val state = uiState) {
             is AuthUiState.Success -> {
                 focusManager.clearFocus()
+                showOtpDialog = false
                 viewModel.resetState()
                 onLoginSuccess()
+            }
+            is AuthUiState.OtpCodeSent -> {
+                activeVerificationId = state.verificationId
+                activePhoneNumber = state.phoneNumber
+                showOtpDialog = true
             }
             is AuthUiState.ResetEmailSent -> {
                 infoMessage = state.message
@@ -78,16 +129,17 @@ fun LoginScreen(
                     )
                 )
             )
+            .testTag("login_screen")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 36.dp),
+                .padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // App Brand Header
             Box(
@@ -98,7 +150,8 @@ fun LoginScreen(
                         Brush.linearGradient(
                             colors = listOf(Color(0xFFFFB300), Color(0xFFFF6D00))
                         )
-                    ),
+                    )
+                    .shadow(12.dp, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -107,10 +160,10 @@ fun LoginScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             Text(
-                text = "Great Voice Room",
+                text = "Great Voice Chat",
                 style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 26.sp,
@@ -122,14 +175,14 @@ fun LoginScreen(
             )
 
             Text(
-                text = "Sign in to join live rooms, voice chats & gifts",
+                text = "Live Social Voice Rooms & Realtime Audio",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFFB0A8D9),
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 6.dp)
+                modifier = Modifier.padding(top = 4.dp)
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(28.dp))
 
             // Card Container for Form
             Card(
@@ -138,9 +191,9 @@ fun LoginScreen(
                     .shadow(16.dp, RoundedCornerShape(24.dp)),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1B1633).copy(alpha = 0.92f)
+                    containerColor = Color(0xFF1B1633).copy(alpha = 0.94f)
                 ),
-                border = androidx.compose.foundation.BorderStroke(
+                border = BorderStroke(
                     1.dp,
                     Brush.verticalGradient(
                         listOf(Color(0xFF3F3766), Color(0xFF221C42))
@@ -162,22 +215,25 @@ fun LoginScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Email Field
+                    // 1. Gmail or Phone Number Field
                     OutlinedTextField(
-                        value = email,
-                        onValueChange = { email = it },
-                        label = { Text("Email address", color = Color(0xFF9E97C4)) },
-                        placeholder = { Text("name@example.com", color = Color(0xFF6B648F)) },
+                        value = emailOrPhone,
+                        onValueChange = {
+                            emailOrPhone = it
+                            infoMessage = null
+                        },
+                        label = { Text("Gmail or Phone Number", color = Color(0xFF9E97C4)) },
+                        placeholder = { Text("name@gmail.com or +1 555-123-4567", color = Color(0xFF6B648F)) },
                         leadingIcon = {
                             Icon(
-                                Icons.Default.Email,
-                                contentDescription = "Email",
+                                if (emailOrPhone.contains("@")) Icons.Default.Email else Icons.Default.Phone,
+                                contentDescription = "Email or Phone",
                                 tint = Color(0xFFFFB300)
                             )
                         },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Email,
+                            keyboardType = if (emailOrPhone.any { it.isLetter() || it == '@' }) KeyboardType.Email else KeyboardType.Phone,
                             imeAction = ImeAction.Next
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -189,16 +245,27 @@ fun LoginScreen(
                             unfocusedContainerColor = Color(0xFF120E24)
                         ),
                         shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("login_email_or_phone_input")
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Password Field
+                    // 2. Password Field (optional if logging in via phone OTP)
+                    val isPhoneNumber = emailOrPhone.isNotBlank() && !emailOrPhone.contains("@")
                     OutlinedTextField(
                         value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Password", color = Color(0xFF9E97C4)) },
+                        onValueChange = {
+                            password = it
+                            infoMessage = null
+                        },
+                        label = {
+                            Text(
+                                if (isPhoneNumber) "Password (Optional for Phone)" else "Password",
+                                color = Color(0xFF9E97C4)
+                            )
+                        },
                         placeholder = { Text("••••••••", color = Color(0xFF6B648F)) },
                         leadingIcon = {
                             Icon(
@@ -225,8 +292,8 @@ fun LoginScreen(
                         keyboardActions = KeyboardActions(
                             onDone = {
                                 focusManager.clearFocus()
-                                if (email.isNotBlank() && password.isNotBlank()) {
-                                    viewModel.login(email, password)
+                                if (emailOrPhone.isNotBlank()) {
+                                    viewModel.login(emailOrPhone, password, activity)
                                 }
                             }
                         ),
@@ -239,10 +306,12 @@ fun LoginScreen(
                             unfocusedContainerColor = Color(0xFF120E24)
                         ),
                         shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("login_password_input")
                     )
 
-                    // Forgot Password Link
+                    // 4. Forgot Password Link
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -251,10 +320,11 @@ fun LoginScreen(
                     ) {
                         TextButton(
                             onClick = {
-                                forgotEmail = email
+                                forgotEmail = if (emailOrPhone.contains("@")) emailOrPhone else ""
                                 showForgotPasswordDialog = true
                             },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                            modifier = Modifier.testTag("forgot_password_button")
                         ) {
                             Text(
                                 text = "Forgot Password?",
@@ -265,12 +335,12 @@ fun LoginScreen(
                         }
                     }
 
-                    // Status Messages
+                    // Status / Error Messages
                     if (infoMessage != null) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = Color(0xFF1B5E20).copy(alpha = 0.35f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50)),
+                            border = BorderStroke(1.dp, Color(0xFF4CAF50)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 8.dp)
@@ -288,7 +358,7 @@ fun LoginScreen(
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = Color(0xFFB71C1C).copy(alpha = 0.35f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE57373)),
+                            border = BorderStroke(1.dp, Color(0xFFE57373)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 8.dp)
@@ -302,17 +372,17 @@ fun LoginScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    // Primary Glow Gradient Login Button
+                    // 3. Login Button
                     val isLoading = uiState is AuthUiState.Loading
                     Button(
                         onClick = {
                             focusManager.clearFocus()
                             infoMessage = null
-                            viewModel.login(email, password)
+                            viewModel.login(emailOrPhone, password, activity)
                         },
-                        enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
+                        enabled = !isLoading && emailOrPhone.isNotBlank(),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
@@ -321,7 +391,8 @@ fun LoginScreen(
                                 shape = RoundedCornerShape(14.dp),
                                 ambientColor = Color(0xFFFF8F00),
                                 spotColor = Color(0xFFFF6D00)
-                            ),
+                            )
+                            .testTag("login_submit_button"),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.Transparent,
@@ -347,7 +418,7 @@ fun LoginScreen(
                                 )
                             } else {
                                 Text(
-                                    text = "Log In",
+                                    text = if (isPhoneNumber) "Continue with Phone OTP" else "Login",
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
@@ -381,16 +452,39 @@ fun LoginScreen(
 
                     Spacer(modifier = Modifier.height(18.dp))
 
-                    // Google Sign-In Button
+                    // 5. Continue with Google Button
                     OutlinedButton(
                         onClick = {
-                            infoMessage = "Google Sign-In uses Firebase OAuth. Please ensure Google Play Services is configured."
+                            focusManager.clearFocus()
+                            infoMessage = null
+                            if (activity is ComponentActivity) {
+                                coroutineScope.launch {
+                                    val credResult = GoogleSignInHelper.signInWithCredentialManager(activity)
+                                    if (credResult.isSuccess) {
+                                        val userData = credResult.getOrThrow()
+                                        viewModel.signInWithGoogle(
+                                            idToken = userData.idToken,
+                                            email = userData.email,
+                                            displayName = userData.displayName,
+                                            photoUrl = userData.photoUrl
+                                        )
+                                    } else {
+                                        // Fallback to GoogleSignInClient
+                                        val client = GoogleSignInHelper.getGoogleSignInClient(context)
+                                        googleSignInLauncher.launch(client.signInIntent)
+                                    }
+                                }
+                            } else {
+                                val client = GoogleSignInHelper.getGoogleSignInClient(context)
+                                googleSignInLauncher.launch(client.signInIntent)
+                            }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp),
+                            .height(50.dp)
+                            .testTag("google_login_button"),
                         shape = RoundedCornerShape(14.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF453C70)),
+                        border = BorderStroke(1.dp, Color(0xFF453C70)),
                         colors = ButtonDefaults.outlinedButtonColors(
                             containerColor = Color(0xFF141028),
                             contentColor = Color.White
@@ -408,7 +502,7 @@ fun LoginScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "Sign in with Google",
+                                text = "Continue with Google",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 15.sp,
                                 color = Color.White
@@ -437,14 +531,109 @@ fun LoginScreen(
                     color = Color(0xFFFFCA28),
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    modifier = Modifier.clickable {
-                        focusManager.clearFocus()
-                        onNavigateRegister()
-                    }
+                    modifier = Modifier
+                        .clickable {
+                            focusManager.clearFocus()
+                            onNavigateRegister()
+                        }
+                        .testTag("navigate_register_button")
                 )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Phone OTP Verification Dialog
+        if (showOtpDialog) {
+            AlertDialog(
+                onDismissRequest = { showOtpDialog = false },
+                containerColor = Color(0xFF1B1633),
+                title = {
+                    Text(
+                        text = "Verify Phone OTP",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "A 6-digit verification code was sent to $activePhoneNumber. Please enter it below:",
+                            color = Color(0xFFB0A8D9),
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedTextField(
+                            value = otpCodeInput,
+                            onValueChange = { otpCodeInput = it.filter { c -> c.isDigit() }.take(6) },
+                            label = { Text("6-Digit OTP Code") },
+                            placeholder = { Text("123456") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.NumberPassword,
+                                imeAction = ImeAction.Done
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFFFFB300),
+                                unfocusedBorderColor = Color(0xFF3D3560)
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("otp_code_input")
+                        )
+
+                        val otpError = (uiState as? AuthUiState.Error)?.message
+                        if (!otpError.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = otpError,
+                                color = Color(0xFFFF8A80),
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    if (activity != null && activePhoneNumber.isNotBlank()) {
+                                        viewModel.sendPhoneOtp(activePhoneNumber, activity)
+                                    }
+                                }
+                            ) {
+                                Text("Resend Code", color = Color(0xFFFFCA28), fontSize = 12.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (activeVerificationId.isNotBlank() && otpCodeInput.isNotBlank()) {
+                                viewModel.verifyPhoneOtp(
+                                    verificationId = activeVerificationId,
+                                    smsCode = otpCodeInput
+                                )
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
+                        modifier = Modifier.testTag("verify_otp_button")
+                    ) {
+                        Text("Verify & Login", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showOtpDialog = false }) {
+                        Text("Cancel", color = Color(0xFFB0A8D9))
+                    }
+                }
+            )
         }
 
         // Forgot Password Dialog
@@ -462,7 +651,7 @@ fun LoginScreen(
                 text = {
                     Column {
                         Text(
-                            text = "Enter your registered email address. We will send a secure Firebase password reset link.",
+                            text = "Enter your registered Gmail or email address. We will send a secure Firebase password reset link.",
                             color = Color(0xFFB0A8D9),
                             fontSize = 13.sp
                         )
@@ -470,8 +659,12 @@ fun LoginScreen(
                         OutlinedTextField(
                             value = forgotEmail,
                             onValueChange = { forgotEmail = it },
-                            label = { Text("Email address") },
+                            label = { Text("Gmail or Email Address") },
                             singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Email,
+                                imeAction = ImeAction.Done
+                            ),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White,
@@ -479,7 +672,9 @@ fun LoginScreen(
                                 unfocusedBorderColor = Color(0xFF3D3560)
                             ),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("forgot_password_email_input")
                         )
                     }
                 },
@@ -488,7 +683,8 @@ fun LoginScreen(
                         onClick = {
                             viewModel.sendPasswordReset(forgotEmail)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300))
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
+                        modifier = Modifier.testTag("send_reset_link_button")
                     ) {
                         Text("Send Link", color = Color.Black, fontWeight = FontWeight.Bold)
                     }

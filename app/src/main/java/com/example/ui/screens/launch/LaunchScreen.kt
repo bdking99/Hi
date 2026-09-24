@@ -30,20 +30,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.GoldPremium
 import com.example.ui.theme.TealPremium
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * LaunchScreen: Displays the Great Voice Room logo with a smooth fade-in and scale animation,
- * glowing VIP equalizer aura, and automatically transitions to the Main Dashboard.
+ * LaunchScreen: Displays the Great Voice Room logo with smooth animation,
+ * checks real FirebaseAuth session, and transitions to Main (Home) if logged in or Login if not.
  */
 @Composable
 fun LaunchScreen(
-    onNavigateToMain: () -> Unit
+    onNavigateNext: (isLoggedIn: Boolean) -> Unit
 ) {
     val transitionState = remember { MutableTransitionState(false) }
     
-    // Scale and Alpha Animation
     val scaleAnim = remember { Animatable(0.6f) }
     val alphaAnim = remember { Animatable(0f) }
     val glowRotate = rememberInfiniteTransition(label = "glow_rotate")
@@ -67,19 +67,20 @@ fun LaunchScreen(
         label = "pulse"
     )
 
+    val isUserLoggedIn = remember { FirebaseAuth.getInstance().currentUser != null }
+
     LaunchedEffect(Unit) {
-        // Trigger smooth fade-in and scale
         transitionState.targetState = true
         launch {
             alphaAnim.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 1000, easing = FastOutSlowInEasing)
+                animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing)
             )
         }
         launch {
             scaleAnim.animateTo(
                 targetValue = 1.05f,
-                animationSpec = tween(durationMillis = 900, easing = FastOutSlowInEasing)
+                animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing)
             )
             scaleAnim.animateTo(
                 targetValue = 1f,
@@ -90,9 +91,8 @@ fun LaunchScreen(
             )
         }
 
-        // Wait for splash showcase, then transition to Main Dashboard
-        delay(2600)
-        onNavigateToMain()
+        delay(1800)
+        onNavigateNext(isUserLoggedIn)
     }
 
     Box(
@@ -107,11 +107,10 @@ fun LaunchScreen(
                     )
                 )
             )
-            .clickable { onNavigateToMain() }
+            .clickable { onNavigateNext(isUserLoggedIn) }
             .testTag("launch_screen"),
         contentAlignment = Alignment.Center
     ) {
-        // Ambient background glowing circles
         Box(
             modifier = Modifier
                 .size(340.dp)
@@ -136,7 +135,6 @@ fun LaunchScreen(
                 .alpha(alphaAnim.value)
                 .padding(24.dp)
         ) {
-            // --- GREAT VOICE ROOM LOGO EMBLEM ---
             Box(
                 modifier = Modifier
                     .size(140.dp)
@@ -176,7 +174,7 @@ fun LaunchScreen(
                         Text("👑", fontSize = 24.sp)
                         Icon(
                             imageVector = Icons.Default.Mic,
-                            contentDescription = "Great Voice Room Logo",
+                            contentDescription = "Great Voice Chat Logo",
                             tint = GoldPremium,
                             modifier = Modifier.size(46.dp)
                         )
@@ -186,9 +184,8 @@ fun LaunchScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // --- APP TITLE & VIP BRANDING ---
             Text(
-                text = "GREAT VOICE ROOM",
+                text = "GREAT VOICE CHAT",
                 style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.Black,
                     letterSpacing = 2.sp
@@ -200,7 +197,7 @@ fun LaunchScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Live Social Voice & Gaming Club",
+                text = "Live Social Voice Rooms & Realtime Audio",
                 style = MaterialTheme.typography.bodyMedium.copy(
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp
@@ -211,7 +208,6 @@ fun LaunchScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // VIP Live Badge
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
@@ -235,7 +231,7 @@ fun LaunchScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "VIP LIVE STREAMING • HD AUDIO",
+                        text = "REALTIME FIREBASE AUTH • LIVE AUDIO",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color.White,
@@ -246,7 +242,6 @@ fun LaunchScreen(
 
             Spacer(modifier = Modifier.height(48.dp))
 
-            // Smooth luxury loading progress indicator
             CircularProgressIndicator(
                 modifier = Modifier.size(24.dp),
                 color = GoldPremium,
@@ -254,7 +249,6 @@ fun LaunchScreen(
             )
         }
 
-        // Bottom Powered By Tag & Version
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
@@ -262,13 +256,13 @@ fun LaunchScreen(
                 .padding(bottom = 20.dp)
         ) {
             Text(
-                text = "Powered by Realtime Audio & Cloud Firestore",
+                text = "Connected to Firebase Realtime Database & Auth",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White.copy(alpha = 0.5f)
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Version 1.0.2 (Build 4) • GreatVoiceRoom",
+                text = "Great Voice Chat • Production Edition",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 color = GoldPremium.copy(alpha = 0.85f)

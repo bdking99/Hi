@@ -41,12 +41,18 @@ fun AppNavigation(appContainer: AppContainer) {
     )
 
     NavHost(navController = navController, startDestination = Routes.Launch) {
-        // Launch Screen: Great Voice Room logo with smooth fade-in and scale animation
+        // Launch Screen: Checks real FirebaseAuth session and routes to Main (Home) or Login
         composable(Routes.Launch) {
             LaunchScreen(
-                onNavigateToMain = {
-                    navController.navigate(Routes.Main) {
-                        popUpTo(Routes.Launch) { inclusive = true }
+                onNavigateNext = { isLoggedIn ->
+                    if (isLoggedIn) {
+                        navController.navigate(Routes.Main) {
+                            popUpTo(Routes.Launch) { inclusive = true }
+                        }
+                    } else {
+                        navController.navigate(Routes.Login) {
+                            popUpTo(Routes.Launch) { inclusive = true }
+                        }
                     }
                 }
             )
